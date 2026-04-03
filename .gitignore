@@ -8,7 +8,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
-
+*.egg-info
 
 .pytest_cache
 .ruff_cache

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude_to_openai_forwarder"
+version = "0.1.0"
+description = "A FastAPI service that translates Claude Messages API requests to OpenAI-compatible chat completions endpoints"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[project.scripts]
+claude_to_openai_forwarder = "app.main:run_server"
+
+[project.urls]
+"Source" = "https://github.com/your-repo/claude_to_openai_forwarder"
+
+[tool.setuptools]
+packages = {find = {where = ['.']}}
+package-dir = {'' = '.'}
+
+[tool.setuptools.dynamic]
+version = {attr = "app.__version__.VERSION"}

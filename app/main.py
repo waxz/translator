@@ -301,7 +301,52 @@ async def list_models(api_key: str = Depends(verify_claude_api_key)):
     }
 
 
+import uvicorn
+
+import argparse
+import uvicorn
+
+import argparse
+
+def run_server():
+    import uvicorn
+    parser = argparse.ArgumentParser(description='Run Claude-to-OpenAI API Forwarder')
+    parser.add_argument('--port', type=int, help='Port to bind the API to')
+    args = parser.parse_args()
+
+    settings = get_settings()
+    port = args.port if args.port is not None else settings.port
+    uvicorn.run(
+        "app.main:app",
+        host=settings.host,
+        port=port,
+        log_level=settings.log_level.lower(),
+        reload=True,
+    )
+    parser = argparse.ArgumentParser(description='Run Claude-to-OpenAI API Forwarder')
+    parser.add_argument('--port', type=int, help='Port to bind the API to')
+    args = parser.parse_args()
+
+    settings = get_settings()
+    uvicorn.run(
+        "app.main:app",
+        host=settings.host,
+        port=args.port if args.port else settings.port,
+        log_level=settings.log_level.lower(),
+        reload=True,
+    )
+    import uvicorn
+    settings = get_settings()
+    uvicorn.run(
+        "app.main:app",
+        host=settings.host,
+        port=settings.port,
+        log_level=settings.log_level.lower(),
+        reload=True,
+    )
+
 if __name__ == "__main__":
+    run_server()
     import uvicorn
 
     settings = get_settings()
