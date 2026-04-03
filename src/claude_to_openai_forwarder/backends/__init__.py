@@ -1,6 +1,6 @@
-from app.backends.base import BaseBackend
-from app.backends.httpx_backend import HttpxBackend
-from app.config import get_settings
+from claude_to_openai_forwarder.backends.base import BaseBackend
+from claude_to_openai_forwarder.backends.httpx_backend import HttpxBackend
+from claude_to_openai_forwarder.config import get_settings
 
 
 _backend_cache = None
@@ -17,7 +17,7 @@ def get_backend() -> BaseBackend:
     backend_type = settings.backend_type.lower() if settings.backend_type else "httpx"
 
     if backend_type == "litellm":
-        from app.backends.litellm_backend import LiteLLMBackend
+        from claude_to_openai_forwarder.backends.litellm_backend import LiteLLMBackend
 
         _backend_cache = LiteLLMBackend()
     else:

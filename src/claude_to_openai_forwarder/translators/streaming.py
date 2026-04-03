@@ -1,8 +1,8 @@
 import json
 import time
 from typing import AsyncIterator, Optional, Dict, Any, List, Tuple
-from app.models.claude import ClaudeStreamEvent, ClaudeUsage
-from app.translators.response import ResponseTranslator
+from claude_to_openai_forwarder.models.claude import ClaudeStreamEvent, ClaudeUsage
+from claude_to_openai_forwarder.translators.response import ResponseTranslator
 import logging
 
 logger = logging.getLogger(__name__)

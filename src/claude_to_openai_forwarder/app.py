@@ -7,14 +7,14 @@ import logging
 import traceback
 import json
 
-from app.config import get_settings
-from app.models.claude import ClaudeRequest, ClaudeResponse
-from app.backends import get_backend, get_backend_name
-from app.translators.request import RequestTranslator
-from app.translators.response import ResponseTranslator
-from app.translators.streaming import StreamingTranslator
-from app.middleware.auth import verify_claude_api_key
-from app.utils.exceptions import handle_openai_error, OpenAIAPIError
+from claude_to_openai_forwarder.config import get_settings
+from claude_to_openai_forwarder.models.claude import ClaudeRequest, ClaudeResponse
+from claude_to_openai_forwarder.backends import get_backend, get_backend_name
+from claude_to_openai_forwarder.translators.request import RequestTranslator
+from claude_to_openai_forwarder.translators.response import ResponseTranslator
+from claude_to_openai_forwarder.translators.streaming import StreamingTranslator
+from claude_to_openai_forwarder.middleware.auth import verify_claude_api_key
+from claude_to_openai_forwarder.utils.exceptions import handle_openai_error, OpenAIAPIError
 
 # Setup logging with more detail
 logging.basicConfig(
@@ -304,12 +304,9 @@ async def list_models(api_key: str = Depends(verify_claude_api_key)):
 import uvicorn
 
 import argparse
-import uvicorn
 
-import argparse
 
 def run_server():
-    import uvicorn
     parser = argparse.ArgumentParser(description='Run Claude-to-OpenAI API Forwarder')
     parser.add_argument('--port', type=int, help='Port to bind the API to')
     args = parser.parse_args()
@@ -317,43 +314,12 @@ def run_server():
     settings = get_settings()
     port = args.port if args.port is not None else settings.port
     uvicorn.run(
-        "app.main:app",
+        "claude_to_openai_forwarder.app:app",
         host=settings.host,
         port=port,
-        log_level=settings.log_level.lower(),
-        reload=True,
-    )
-    parser = argparse.ArgumentParser(description='Run Claude-to-OpenAI API Forwarder')
-    parser.add_argument('--port', type=int, help='Port to bind the API to')
-    args = parser.parse_args()
-
-    settings = get_settings()
-    uvicorn.run(
-        "app.main:app",
-        host=settings.host,
-        port=args.port if args.port else settings.port,
-        log_level=settings.log_level.lower(),
-        reload=True,
-    )
-    import uvicorn
-    settings = get_settings()
-    uvicorn.run(
-        "app.main:app",
-        host=settings.host,
-        port=settings.port,
         log_level=settings.log_level.lower(),
         reload=True,
     )
 
 if __name__ == "__main__":
     run_server()
-    import uvicorn
-
-    settings = get_settings()
-    uvicorn.run(
-        "app.main:app",
-        host=settings.host,
-        port=settings.port,
-        log_level=settings.log_level.lower(),
-        reload=True,
-    )

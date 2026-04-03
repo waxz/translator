@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import AsyncIterator, Dict, Any, Optional
-from app.models.claude import ClaudeRequest
-from app.models.openai import OpenAIRequest, OpenAIResponse
+from claude_to_openai_forwarder.models.claude import ClaudeRequest
+from claude_to_openai_forwarder.models.openai import OpenAIRequest, OpenAIResponse
 
 
 class BaseBackend(ABC):

@@ -1,7 +1,7 @@
 import httpx
 from typing import AsyncIterator
-from app.config import get_settings
-from app.models.openai import OpenAIRequest, OpenAIResponse
+from claude_to_openai_forwarder.config import get_settings
+from claude_to_openai_forwarder.models.openai import OpenAIRequest, OpenAIResponse
 import logging
 import json
 

@@ -144,21 +144,16 @@ UV_CACHE_DIR=/tmp/uv-cache uv pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Install from wheel:
+Build and install from wheel:
 
 ```bash
-python -m build
-uv pip install dist/claude_to_openai_forwarder-0.1.0-py3-none-any.whl
+uv pip install . 
+uv build --wheel
+uv pip install dist/claude_openai_forwarder-0.1.0-py3-none-any.whl
 ```
 
 ## Running The API
 
-From source:
-
-```bash
-source ~/.bashrc
-UV_CACHE_DIR=/tmp/uv-cache uv run uvicorn app.main:app --reload
-```
 
 From installed wheel:
 

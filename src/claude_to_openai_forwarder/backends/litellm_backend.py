@@ -1,9 +1,9 @@
 import litellm
 from typing import AsyncIterator, Dict, Any, Optional
-from app.config import get_settings
-from app.models.openai import OpenAIRequest, OpenAIResponse
-from app.backends.base import BaseBackend
-from app.translators.request import RequestTranslator
+from claude_to_openai_forwarder.config import get_settings
+from claude_to_openai_forwarder.models.openai import OpenAIRequest, OpenAIResponse
+from claude_to_openai_forwarder.backends.base import BaseBackend
+from claude_to_openai_forwarder.translators.request import RequestTranslator
 import logging
 import json
 import uuid
@@ -146,7 +146,7 @@ class LiteLLMBackend(BaseBackend):
         # Extract from LiteLLM ModelResponse
         choices = []
         for choice in response.choices:
-            from app.models.openai import OpenAIMessage
+            from claude_to_openai_forwarder.models.openai import OpenAIMessage
 
             msg = choice.message
 
@@ -161,7 +161,7 @@ class LiteLLMBackend(BaseBackend):
                 role=msg.role, content=content, tool_calls=tool_calls
             )
 
-            from app.models.openai import OpenAIChoice
+            from claude_to_openai_forwarder.models.openai import OpenAIChoice
 
             choices.append(
                 OpenAIChoice(
@@ -172,7 +172,7 @@ class LiteLLMBackend(BaseBackend):
             )
 
         usage = response.usage
-        from app.models.openai import OpenAIUsage
+        from claude_to_openai_forwarder.models.openai import OpenAIUsage
 
         openai_usage = OpenAIUsage(
             prompt_tokens=usage.prompt_tokens if hasattr(usage, "prompt_tokens") else 0,

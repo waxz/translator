@@ -1,7 +1,7 @@
 from fastapi import Header, HTTPException, status
 from typing import Optional
 
-from app.config import get_settings
+from claude_to_openai_forwarder.config import get_settings
 
 
 async def verify_claude_api_key(x_api_key: Optional[str] = Header(None)):

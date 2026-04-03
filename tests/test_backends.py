@@ -5,13 +5,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
-from app.main import app
-from app.middleware.auth import verify_claude_api_key
-from app.models.claude import ClaudeRequest
-from app.models.openai import OpenAIRequest
-from app.translators.request import RequestTranslator
-from app.translators.streaming import StreamingTranslator
-from app.utils.exceptions import OpenAIAPIError
+from claude_to_openai_forwarder.app import app
+from claude_to_openai_forwarder.middleware.auth import verify_claude_api_key
+from claude_to_openai_forwarder.models.claude import ClaudeRequest
+from claude_to_openai_forwarder.models.openai import OpenAIRequest
+from claude_to_openai_forwarder.translators.request import RequestTranslator
+from claude_to_openai_forwarder.translators.streaming import StreamingTranslator
+from claude_to_openai_forwarder.utils.exceptions import OpenAIAPIError
 from fastapi import HTTPException
 
 
@@ -85,29 +85,29 @@ class FakeAsyncClient:
 
 class BackendFactoryTests(unittest.TestCase):
     def tearDown(self):
-        import app.backends
+        import claude_to_openai_forwarder.backends
 
-        app.backends._backend_cache = None
+        claude_to_openai_forwarder.backends._backend_cache = None
 
     def test_get_backend_returns_httpx_backend(self):
-        import app.backends
+        import claude_to_openai_forwarder.backends
 
         sentinel = object()
         with patch("app.backends.get_settings", return_value=SimpleNamespace(backend_type="httpx")), patch(
             "app.backends.HttpxBackend", return_value=sentinel
         ):
-            backend = app.backends.get_backend()
+            backend = claude_to_openai_forwarder.backends.get_backend()
 
         self.assertIs(backend, sentinel)
 
     def test_get_backend_returns_litellm_backend(self):
-        import app.backends
+        import claude_to_openai_forwarder.backends
 
         sentinel = object()
         with patch("app.backends.get_settings", return_value=SimpleNamespace(backend_type="litellm")), patch(
             "app.backends.litellm_backend.LiteLLMBackend", return_value=sentinel
         ):
-            backend = app.backends.get_backend()
+            backend = claude_to_openai_forwarder.backends.get_backend()
 
         self.assertIs(backend, sentinel)
 
@@ -152,7 +152,7 @@ class HttpxBackendTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(settings_patcher.stop)
         settings_patcher.start()
 
-        from app.backends.httpx_backend import HttpxBackend
+        from claude_to_openai_forwarder.backends.httpx_backend import HttpxBackend
 
         self.backend = HttpxBackend()
 
@@ -253,7 +253,7 @@ class LiteLLMBackendTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(settings_patcher.stop)
         settings_patcher.start()
 
-        from app.backends.litellm_backend import LiteLLMBackend
+        from claude_to_openai_forwarder.backends.litellm_backend import LiteLLMBackend
 
         self.backend = LiteLLMBackend()
 

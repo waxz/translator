@@ -1,8 +1,8 @@
 import time
 import json
 from typing import List, Optional
-from app.models.openai import OpenAIResponse, OpenAIChoice, OpenAIMessage
-from app.models.claude import ClaudeResponse, ClaudeContentBlock, ClaudeUsage
+from claude_to_openai_forwarder.models.openai import OpenAIResponse, OpenAIChoice, OpenAIMessage
+from claude_to_openai_forwarder.models.claude import ClaudeResponse, ClaudeContentBlock, ClaudeUsage
 import logging
 
 logger = logging.getLogger(__name__)

@@ -2,9 +2,9 @@ import logging
 import json
 from typing import Any, Dict, List, Optional, Union
 
-from app.config import get_settings
-from app.models.claude import ClaudeMessage, ClaudeRequest
-from app.models.openai import OpenAIMessage, OpenAIRequest
+from claude_to_openai_forwarder.config import get_settings
+from claude_to_openai_forwarder.models.claude import ClaudeMessage, ClaudeRequest
+from claude_to_openai_forwarder.models.openai import OpenAIMessage, OpenAIRequest
 
 logger = logging.getLogger(__name__)
 
