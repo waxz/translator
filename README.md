@@ -16,15 +16,15 @@ The FastAPI service accepts Claude Messages API-style requests and translates th
 
 The project is organized into the following components:
 
-* `app/main.py`: The FastAPI application entry point, responsible for handling incoming requests and routing them to the appropriate backend.
-* `app/translators/`: A module containing the logic for translating Claude requests to OpenAI format and vice versa.
-* `app/backends/`: A module providing the backend implementations for interacting with OpenAI-compatible APIs, including `httpx` and `litellm`.
+* `./src/claude_openai_forwarder/app.py`: The FastAPI application entry point, responsible for handling incoming requests and routing them to the appropriate backend.
+* `./src/claude_openai_forwarder/translators/`: A module containing the logic for translating Claude requests to OpenAI format and vice versa.
+* `./src/claude_openai_forwarder/backends/`: A module providing the backend implementations for interacting with OpenAI-compatible APIs, including `httpx` and `litellm`.
 * `tests/test_backends.py`: A test suite for verifying the correctness of the backend implementations and translation logic.
 * `requirements.txt`: A file listing the Python dependencies required by the project.
 
-- [`app/main.py`](./app/main.py): FastAPI entrypoint
-- [`app/translators/`](./app/translators): request, response, and streaming translation
-- [`app/backends/`](./app/backends): backend abstraction and implementations
+- [`./src/claude_openai_forwarder/app.py`](./src/claude_openai_forwarder/app.py): FastAPI entrypoint
+- [`./src/claude_openai_forwarder/translators/`](./src/claude_openai_forwarder/translators): request, response, and streaming translation
+- [`./src/claude_openai_forwarder/backends/`](./src/claude_openai_forwarder/backends): backend abstraction and implementations
 - [`tests/test_backends.py`](./tests/test_backends.py): backend and translator tests
 - [`requirements.txt`](./requirements.txt): Python dependencies
 
@@ -205,7 +205,7 @@ Key variables:
 - `PORT`
 - `LOG_LEVEL`
 
-See [`.env.example`](./.env.example) for a working example.
+See [`.env.example`](.env.example) for a working example.
 
 ### Inbound Auth
 
