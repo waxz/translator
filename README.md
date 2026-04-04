@@ -99,7 +99,41 @@ In this project, the practical difference is:
 - LiteLLM still needs to know the real provider for NVIDIA NIM, which is why `MODEL_PROVIDER=nvidia_nim` matters
 - some NVIDIA model flows are more reliable with prompt-embedded tool instructions than native tool calling, which is why this repo currently uses `FORCE_TOOL_IN_PROMPT=true` for the NVIDIA + LiteLLM example
 
-## Tool Calling Behavior
+## Token Counting Endpoint
+
+`POST /v1/messages/count_tokens`
+
+Counts tokens for a given message payload without generating a response. Returns a Claude‑compatible response containing only the `usage` field (input tokens and `output_tokens` = 0).
+
+**Example**
+
+```bash
+curl http://127.0.0.1:8000/v1/messages/count_tokens \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $CLAUDE_API_KEY" \
+  -d '{
+        "model": "claude-3-5-sonnet-20241022",
+        "messages": [
+          {"role":"user","content":"Hello"},
+          {"role":"assistant","content":"Hi!"}
+        ]
+      }'
+```
+
+Response:
+
+```json
+{
+  "id": "...",
+  "type": "message",
+  "role": "assistant",
+  "content": [],
+  "model": "claude-3-5-sonnet-20241022",
+  "stop_reason": null,
+  "usage": {"input_tokens": 12, "output_tokens": 0}
+}
+```
+
 
 The proxy is designed to preserve Claude-compatible tool calling semantics.
 
