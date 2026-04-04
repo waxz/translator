@@ -8,7 +8,7 @@ import traceback
 import json
 
 from claude_to_openai_forwarder.config import get_settings
-from claude_to_openai_forwarder.models.claude import ClaudeRequest, ClaudeResponse
+from claude_to_openai_forwarder.models.claude import ClaudeRequest, ClaudeResponse, ClaudeUsage
 from claude_to_openai_forwarder.backends import get_backend, get_backend_name
 from claude_to_openai_forwarder.translators.request import RequestTranslator
 from claude_to_openai_forwarder.translators.response import ResponseTranslator
@@ -258,6 +258,60 @@ async def create_message(
             },
         )
 
+
+@app.post("/v1/messages/count_tokens")
+async def count_tokens(
+    raw_request: FastAPIRequest,
+    api_key: str = Depends(verify_claude_api_key),
+):
+    """
+    Token‑Counting endpoint – mirrors the official Claude API.
+    Returns the number of input tokens for the supplied messages (including tools, images, etc.).
+    The response shape follows the Claude response model but contains only the ``usage`` field.
+    """
+    try:
+        # Parse raw body
+        body = await raw_request.body()
+        body_dict = json.loads(body.decode())
+        request = ClaudeRequest(**body_dict)
+    except (json.JSONDecodeError, ValidationError) as e:
+        logger.error(f"Invalid request for count_tokens: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "type": "error",
+                "error": {"type": "invalid_request_error", "message": f"Invalid JSON: {str(e)}"},
+            },
+        )
+
+    # Translate to OpenAI request – clear max_tokens to request only token usage
+    settings = get_settings()
+    openai_req = RequestTranslator.translate(request, default_model=settings.default_openai_model)
+    openai_req.max_tokens = None
+
+    try:
+        backend = get_backend()
+        logger.info(f"Counting tokens via backend: {backend.get_backend_name()}")
+        openai_resp = await backend.create_completion(openai_req)
+    except OpenAIAPIError as e:
+        raise handle_openai_error(e)
+
+    # Build a Claude‑compatible usage object
+    usage = ClaudeUsage(
+        input_tokens=openai_resp.usage.prompt_tokens,
+        output_tokens=openai_resp.usage.completion_tokens,
+    )
+
+    # Return a ClaudeResponse with empty content and the usage info
+    return ClaudeResponse(
+        id=openai_resp.id,
+        type="message",
+        role="assistant",
+        content=[],
+        model=request.model,
+        stop_reason=None,
+        usage=usage,
+    )
 
 @app.get("/v1/models")
 async def list_models(api_key: str = Depends(verify_claude_api_key)):

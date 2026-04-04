@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     force_tool_in_prompt: bool = False
 
 
+SETTINGS : Settings = Settings()
 @lru_cache()
 def get_settings() -> Settings:
-    return Settings()
+    return SETTINGS

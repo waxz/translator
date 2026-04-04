@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from typing import AsyncIterator, Optional, Dict, Any, List, Tuple
 from claude_to_openai_forwarder.models.claude import ClaudeStreamEvent, ClaudeUsage
@@ -33,6 +34,7 @@ class StreamingTranslator:
         tool_calls_buffer: Dict[int, Dict[str, Any]] = {}
         buffered_text = ""
         buffered_text_segments: List[str] = []
+        sse_buffer = ""
 
         total_input_tokens = 0
         total_output_tokens = 0
@@ -59,146 +61,169 @@ class StreamingTranslator:
             if not chunk:
                 continue
 
-            # Parse SSE data
-            lines = chunk.decode("utf-8").strip().split("\n")
-            for line in lines:
-                if line.startswith("data: "):
-                    data_str = line[6:]  # Remove 'data: ' prefix
+            sse_buffer += chunk.decode("utf-8")
 
-                    if data_str == "[DONE]":
-                        continue
+            while True:
+                event_parts = re.split(r"\r?\n\r?\n", sse_buffer, maxsplit=1)
+                if len(event_parts) < 2:
+                    break
 
-                    try:
-                        data = json.loads(data_str)
+                raw_event, sse_buffer = event_parts
+                data_str = cls._extract_sse_data(raw_event)
+                if data_str is None:
+                    continue
 
-                        # Extract delta
-                        if data.get("choices"):
-                            choice = data["choices"][0]
-                            delta = choice.get("delta", {})
+                if data_str == "[DONE]":
+                    continue
 
-                            # Handle text content delta
-                            if "content" in delta and delta["content"]:
-                                buffered_text += delta["content"]
-                                buffered_text_segments.append(delta["content"])
+                try:
+                    data = json.loads(data_str)
 
-                            # Handle tool calls
-                            if "tool_calls" in delta and delta["tool_calls"]:
-                                (
-                                    buffered_events,
-                                    current_block_index,
-                                    buffered_text,
-                                    buffered_text_segments,
-                                ) = cls._flush_buffered_text(
-                                    content_blocks=content_blocks,
-                                    current_block_index=current_block_index,
-                                    buffered_text=buffered_text,
-                                    buffered_text_segments=buffered_text_segments,
-                                )
-                                for event in buffered_events:
-                                    yield event
+                    # Extract delta
+                    if data.get("choices"):
+                        choice = data["choices"][0]
+                        delta = choice.get("delta", {})
 
-                                for tool_call_delta in delta["tool_calls"]:
-                                    tc_index = tool_call_delta.get("index", 0)
+                        # Handle text content delta
+                        if "content" in delta and delta["content"]:
+                            buffered_text += delta["content"]
+                            buffered_text_segments.append(delta["content"])
 
-                                    # Initialize tool call buffer
-                                    if tc_index not in tool_calls_buffer:
-                                        tool_calls_buffer[tc_index] = {
-                                            "id": tool_call_delta.get(
-                                                "id",
-                                                f"toolu_{int(time.time() * 1000)}_{tc_index}",
-                                            ),
-                                            "type": "function",
-                                            "function": {"name": "", "arguments": ""},
+                        # Handle tool calls
+                        if "tool_calls" in delta and delta["tool_calls"]:
+                            (
+                                buffered_events,
+                                current_block_index,
+                                buffered_text,
+                                buffered_text_segments,
+                            ) = cls._flush_buffered_text(
+                                content_blocks=content_blocks,
+                                current_block_index=current_block_index,
+                                buffered_text=buffered_text,
+                                buffered_text_segments=buffered_text_segments,
+                            )
+                            for event in buffered_events:
+                                yield event
+
+                            for tool_call_delta in delta["tool_calls"]:
+                                tc_index = tool_call_delta.get("index", 0)
+
+                                # Initialize tool call buffer
+                                if tc_index not in tool_calls_buffer:
+                                    tool_calls_buffer[tc_index] = {
+                                        "id": tool_call_delta.get(
+                                            "id",
+                                            f"toolu_{int(time.time() * 1000)}_{tc_index}",
+                                        ),
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""},
+                                    }
+
+                                    current_block_index = len(content_blocks)
+
+                                    tool_name = tool_call_delta.get(
+                                        "function", {}
+                                    ).get("name", "")
+                                    if tool_name:
+                                        tool_calls_buffer[tc_index]["function"][
+                                            "name"
+                                        ] = tool_name
+
+                                    logger.info(
+                                        f"Starting tool_use block: index={current_block_index}, name={tool_name}"
+                                    )
+
+                                    yield cls._format_sse(
+                                        "content_block_start",
+                                        {
+                                            "type": "content_block_start",
+                                            "index": current_block_index,
+                                            "content_block": {
+                                                "type": "tool_use",
+                                                "id": tool_calls_buffer[tc_index][
+                                                    "id"
+                                                ],
+                                                "name": tool_name,
+                                            },
+                                        },
+                                    )
+
+                                    content_blocks.append(
+                                        {
+                                            "type": "tool_use",
+                                            "id": tool_calls_buffer[tc_index]["id"],
+                                            "name": tool_name,
+                                            "input": {},
                                         }
+                                    )
+                                    tool_calls_buffer[tc_index]["content_block_index"] = current_block_index
 
-                                        # Close previous text block if exists
-                                        # Start new tool_use block
-                                        current_block_index = len(content_blocks)
+                                # Update tool call
+                                if "function" in tool_call_delta:
+                                    func = tool_call_delta["function"]
+                                    content_block_index = tool_calls_buffer[
+                                        tc_index
+                                    ]["content_block_index"]
+                                    if "name" in func:
+                                        tool_calls_buffer[tc_index]["function"][
+                                            "name"
+                                        ] = func["name"]
+                                        content_blocks[content_block_index][
+                                            "name"
+                                        ] = func["name"]
 
-                                        tool_name = tool_call_delta.get(
-                                            "function", {}
-                                        ).get("name", "")
-                                        if tool_name:
-                                            tool_calls_buffer[tc_index]["function"][
-                                                "name"
-                                            ] = tool_name
-
-                                        logger.info(
-                                            f"Starting tool_use block: index={current_block_index}, name={tool_name}"
-                                        )
+                                    if "arguments" in func:
+                                        tool_calls_buffer[tc_index]["function"][
+                                            "arguments"
+                                        ] += func["arguments"]
 
                                         yield cls._format_sse(
-                                            "content_block_start",
+                                            "content_block_delta",
                                             {
-                                                "type": "content_block_start",
-                                                "index": current_block_index,
-                                                "content_block": {
-                                                    "type": "tool_use",
-                                                    "id": tool_calls_buffer[tc_index][
-                                                        "id"
+                                                "type": "content_block_delta",
+                                                "index": content_block_index,
+                                                "delta": {
+                                                    "type": "input_json_delta",
+                                                    "partial_json": func[
+                                                        "arguments"
                                                     ],
-                                                    "name": tool_name,
                                                 },
                                             },
                                         )
 
-                                        content_blocks.append(
-                                            {
-                                                "type": "tool_use",
-                                                "id": tool_calls_buffer[tc_index]["id"],
-                                                "name": tool_name,
-                                                "input": {},
-                                            }
-                                        )
-                                        tool_calls_buffer[tc_index]["content_block_index"] = current_block_index
+                        # Track finish reason
+                        if choice.get("finish_reason"):
+                            finish_reason = choice["finish_reason"]
 
-                                    # Update tool call
-                                    if "function" in tool_call_delta:
-                                        func = tool_call_delta["function"]
-                                        content_block_index = tool_calls_buffer[
-                                            tc_index
-                                        ]["content_block_index"]
-                                        if "name" in func:
-                                            tool_calls_buffer[tc_index]["function"][
-                                                "name"
-                                            ] = func["name"]
-                                            content_blocks[content_block_index][
-                                                "name"
-                                            ] = func["name"]
+                    # Get usage if available
+                    if "usage" in data:
+                        usage = data["usage"]
+                        total_input_tokens = usage.get("prompt_tokens", 0)
+                        total_output_tokens = usage.get("completion_tokens", 0)
 
-                                        if "arguments" in func:
-                                            tool_calls_buffer[tc_index]["function"][
-                                                "arguments"
-                                            ] += func["arguments"]
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse SSE data: {e}")
+                    continue
 
-                                            # Send input_json_delta
-                                            yield cls._format_sse(
-                                                "content_block_delta",
-                                                {
-                                                    "type": "content_block_delta",
-                                                    "index": content_block_index,
-                                                    "delta": {
-                                                        "type": "input_json_delta",
-                                                        "partial_json": func[
-                                                            "arguments"
-                                                        ],
-                                                    },
-                                                },
-                                            )
-
-                            # Track finish reason
-                            if choice.get("finish_reason"):
-                                finish_reason = choice["finish_reason"]
-
-                        # Get usage if available
-                        if "usage" in data:
-                            usage = data["usage"]
-                            total_input_tokens = usage.get("prompt_tokens", 0)
-                            total_output_tokens = usage.get("completion_tokens", 0)
-
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"Failed to parse SSE data: {e}")
-                        continue
+        if sse_buffer.strip():
+            data_str = cls._extract_sse_data(sse_buffer)
+            if data_str and data_str != "[DONE]":
+                try:
+                    data = json.loads(data_str)
+                    if data.get("choices"):
+                        choice = data["choices"][0]
+                        delta = choice.get("delta", {})
+                        if "content" in delta and delta["content"]:
+                            buffered_text += delta["content"]
+                            buffered_text_segments.append(delta["content"])
+                        if choice.get("finish_reason"):
+                            finish_reason = choice["finish_reason"]
+                    if "usage" in data:
+                        usage = data["usage"]
+                        total_input_tokens = usage.get("prompt_tokens", 0)
+                        total_output_tokens = usage.get("completion_tokens", 0)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse trailing SSE data: {e}")
 
         (
             buffered_events,
@@ -309,6 +334,38 @@ class StreamingTranslator:
     def _format_sse(event_type: str, data: dict) -> str:
         """Format data as Server-Sent Event"""
         return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+    @staticmethod
+    def _extract_sse_data(raw_event: str) -> Optional[str]:
+        data_fragments: List[str] = []
+        saw_data = False
+
+        for raw_line in raw_event.splitlines():
+            line = raw_line.rstrip("\r")
+            if line.startswith("data: "):
+                data_fragments.append(line[6:])
+                saw_data = True
+                continue
+            if line.startswith("data:"):
+                data_fragments.append(line[5:].lstrip())
+                saw_data = True
+                continue
+            if not line:
+                continue
+
+            # Some providers split JSON across physical lines inside a single SSE
+            # event. Preserve those fragments once a data field has started.
+            if saw_data and ":" not in line:
+                data_fragments.append(line)
+                continue
+
+            if saw_data and line[:1] in {'{', '}', '[', ']', '"', ',', ' '}:
+                data_fragments.append(line)
+
+        if not data_fragments:
+            return None
+
+        return "".join(data_fragments)
 
     @classmethod
     def _flush_buffered_text(

@@ -93,8 +93,8 @@ class BackendFactoryTests(unittest.TestCase):
         import claude_to_openai_forwarder.backends
 
         sentinel = object()
-        with patch("app.backends.get_settings", return_value=SimpleNamespace(backend_type="httpx")), patch(
-            "app.backends.HttpxBackend", return_value=sentinel
+        with patch("claude_to_openai_forwarder.backends.get_settings", return_value=SimpleNamespace(backend_type="httpx")), patch(
+            "claude_to_openai_forwarder.backends.HttpxBackend", return_value=sentinel
         ):
             backend = claude_to_openai_forwarder.backends.get_backend()
 
@@ -104,8 +104,8 @@ class BackendFactoryTests(unittest.TestCase):
         import claude_to_openai_forwarder.backends
 
         sentinel = object()
-        with patch("app.backends.get_settings", return_value=SimpleNamespace(backend_type="litellm")), patch(
-            "app.backends.litellm_backend.LiteLLMBackend", return_value=sentinel
+        with patch("claude_to_openai_forwarder.backends.get_settings", return_value=SimpleNamespace(backend_type="litellm")), patch(
+            "claude_to_openai_forwarder.backends.litellm_backend.LiteLLMBackend", return_value=sentinel
         ):
             backend = claude_to_openai_forwarder.backends.get_backend()
 
@@ -115,7 +115,7 @@ class BackendFactoryTests(unittest.TestCase):
 class AuthMiddlewareTests(unittest.IsolatedAsyncioTestCase):
     async def test_verify_claude_api_key_accepts_exact_configured_key(self):
         with patch(
-            "app.middleware.auth.get_settings",
+            "claude_to_openai_forwarder.middleware.auth.get_settings",
             return_value=SimpleNamespace(claude_api_key="sk-ant-secret"),
         ):
             result = await verify_claude_api_key("sk-ant-secret")
@@ -124,7 +124,7 @@ class AuthMiddlewareTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_verify_claude_api_key_rejects_wrong_configured_key(self):
         with patch(
-            "app.middleware.auth.get_settings",
+            "claude_to_openai_forwarder.middleware.auth.get_settings",
             return_value=SimpleNamespace(claude_api_key="sk-ant-secret"),
         ):
             with self.assertRaises(HTTPException) as ctx:
@@ -134,7 +134,7 @@ class AuthMiddlewareTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_verify_claude_api_key_allows_missing_key_when_unconfigured(self):
         with patch(
-            "app.middleware.auth.get_settings",
+            "claude_to_openai_forwarder.middleware.auth.get_settings",
             return_value=SimpleNamespace(claude_api_key=None),
         ):
             result = await verify_claude_api_key(None)
@@ -148,7 +148,7 @@ class HttpxBackendTests(unittest.IsolatedAsyncioTestCase):
             openai_base_url="https://api.example.com/v1",
             openai_api_key="test-key",
         )
-        settings_patcher = patch("app.backends.httpx_backend.get_settings", return_value=settings)
+        settings_patcher = patch("claude_to_openai_forwarder.backends.httpx_backend.get_settings", return_value=settings)
         self.addCleanup(settings_patcher.stop)
         settings_patcher.start()
 
@@ -175,7 +175,7 @@ class HttpxBackendTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch(
-            "app.backends.httpx_backend.httpx.AsyncClient",
+            "claude_to_openai_forwarder.backends.httpx_backend.httpx.AsyncClient",
             side_effect=lambda timeout: FakeAsyncClient(
                 post_response=response,
                 post_spy=post_spy,
@@ -195,7 +195,7 @@ class HttpxBackendTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch(
-            "app.backends.httpx_backend.httpx.AsyncClient",
+            "claude_to_openai_forwarder.backends.httpx_backend.httpx.AsyncClient",
             side_effect=lambda timeout: FakeAsyncClient(post_response=response),
         ):
             with self.assertRaises(OpenAIAPIError) as ctx:
@@ -209,7 +209,7 @@ class HttpxBackendTests(unittest.IsolatedAsyncioTestCase):
         stream_response = FakeHTTPXStreamResponse(status_code=200, chunks=chunks)
 
         with patch(
-            "app.backends.httpx_backend.httpx.AsyncClient",
+            "claude_to_openai_forwarder.backends.httpx_backend.httpx.AsyncClient",
             side_effect=lambda timeout: FakeAsyncClient(stream_response=stream_response),
         ):
             result = [
@@ -226,7 +226,7 @@ class HttpxBackendTests(unittest.IsolatedAsyncioTestCase):
         stream_response = FakeHTTPXStreamResponse(status_code=400, error_body=error_body)
 
         with patch(
-            "app.backends.httpx_backend.httpx.AsyncClient",
+            "claude_to_openai_forwarder.backends.httpx_backend.httpx.AsyncClient",
             side_effect=lambda timeout: FakeAsyncClient(stream_response=stream_response),
         ):
             with self.assertRaises(OpenAIAPIError) as ctx:
@@ -249,7 +249,7 @@ class LiteLLMBackendTests(unittest.IsolatedAsyncioTestCase):
             openai_base_url="https://integrate.api.nvidia.com/v1",
             model_provider=None,
         )
-        settings_patcher = patch("app.backends.litellm_backend.get_settings", return_value=settings)
+        settings_patcher = patch("claude_to_openai_forwarder.backends.litellm_backend.get_settings", return_value=settings)
         self.addCleanup(settings_patcher.stop)
         settings_patcher.start()
 
@@ -309,7 +309,7 @@ class LiteLLMBackendTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch(
-            "app.backends.litellm_backend.litellm.acompletion",
+            "claude_to_openai_forwarder.backends.litellm_backend.litellm.acompletion",
             new=AsyncMock(return_value=litellm_response),
         ) as completion_mock:
             result = await self.backend.create_completion(make_request())
@@ -348,7 +348,7 @@ class LiteLLMBackendTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with patch(
-            "app.backends.litellm_backend.litellm.acompletion",
+            "claude_to_openai_forwarder.backends.litellm_backend.litellm.acompletion",
             new=AsyncMock(return_value=litellm_response),
         ):
             result = await self.backend.create_completion(make_request())
@@ -387,7 +387,7 @@ class LiteLLMBackendTests(unittest.IsolatedAsyncioTestCase):
             )
 
         with patch(
-            "app.backends.litellm_backend.litellm.acompletion",
+            "claude_to_openai_forwarder.backends.litellm_backend.litellm.acompletion",
             new=AsyncMock(return_value=fake_stream()),
         ):
             chunks = [
@@ -430,7 +430,7 @@ class LiteLLMBackendTests(unittest.IsolatedAsyncioTestCase):
             )
 
         with patch(
-            "app.backends.litellm_backend.litellm.acompletion",
+            "claude_to_openai_forwarder.backends.litellm_backend.litellm.acompletion",
             new=AsyncMock(return_value=fake_stream()),
         ):
             chunks = [
@@ -527,6 +527,19 @@ class StreamingTranslatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('\\"limit\\": 5', joined)
         self.assertIn('"stop_reason": "tool_use"', joined)
 
+    async def test_translate_stream_handles_sse_json_split_across_chunks(self):
+        async def openai_stream():
+            yield b'data: {"choices":[{"delta":{"content":"hello '
+            yield b'world"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        events = [event async for event in StreamingTranslator.translate_stream(openai_stream())]
+        joined = "".join(events)
+
+        self.assertIn('"type": "text_delta"', joined)
+        self.assertIn('"text": "hello world"', joined)
+        self.assertIn('"stop_reason": "end_turn"', joined)
+
 
 class RequestTranslatorTests(unittest.TestCase):
     def test_translate_uses_prompt_tool_mode_for_tool_history(self):
@@ -572,7 +585,7 @@ class RequestTranslatorTests(unittest.TestCase):
         )
 
         with patch(
-            "app.translators.request.get_settings",
+            "claude_to_openai_forwarder.translators.request.get_settings",
             return_value=SimpleNamespace(
                 default_openai_model="meta/llama-4-maverick-17b-128e-instruct",
                 claude_model_map={},
@@ -603,7 +616,7 @@ class RequestTranslatorTests(unittest.TestCase):
         )
 
         with patch(
-            "app.translators.request.get_settings",
+            "claude_to_openai_forwarder.translators.request.get_settings",
             return_value=SimpleNamespace(
                 default_openai_model="gpt-4o-mini",
                 claude_model_map={
@@ -618,12 +631,103 @@ class RequestTranslatorTests(unittest.TestCase):
             translated.model, "meta/llama-4-maverick-17b-128e-instruct"
         )
 
+    def test_translate_prompt_tool_mode_is_generic_for_non_nvidia_provider(self):
+        claude_request = ClaudeRequest.model_validate(
+            {
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 128,
+                "tools": [
+                    {
+                        "name": "CustomTool",
+                        "description": "Run a custom action",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"],
+                        },
+                    }
+                ],
+                "messages": [
+                    {"role": "user", "content": "use the custom tool"},
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_custom_1",
+                                "name": "CustomTool",
+                                "input": {"path": "./app"},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "toolu_custom_1",
+                                "content": "ok",
+                            }
+                        ],
+                    },
+                ],
+            }
+        )
 
-class ClaudeMessagesAPITests(unittest.IsolatedAsyncioTestCase):
+        with patch(
+            "claude_to_openai_forwarder.translators.request.get_settings",
+            return_value=SimpleNamespace(
+                default_openai_model="gpt-oss:120b-cloud",
+                claude_model_map={
+                    "claude-3-5-sonnet-20241022": "gpt-oss:120b-cloud"
+                },
+                force_tool_in_prompt=True,
+            ),
+        ):
+            translated = RequestTranslator.translate(claude_request)
+
+        self.assertEqual(translated.model, "gpt-oss:120b-cloud")
+        self.assertIsNone(translated.tools)
+        self.assertEqual(translated.messages[0].role, "system")
+        self.assertIn("CustomTool", translated.messages[0].content)
+        self.assertEqual(translated.messages[1].role, "user")
+        self.assertEqual(translated.messages[2].role, "assistant")
+        self.assertIn('"type": "tool_use"', translated.messages[2].content)
+        self.assertEqual(translated.messages[3].role, "user")
+        self.assertIn("Tool result received.", translated.messages[3].content)
+
+
+    async def test_count_tokens_endpoint(self):
+        """Verify the /v1/messages/count_tokens endpoint returns token usage."""
+        # Minimal payload with two messages
+        payload = {
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi there!"},
+            ],
+        }
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.post(
+                "/v1/messages/count_tokens",
+                headers={"x-api-key": "sk-ant-test123"},
+                json=payload,
+            )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        # Should contain a usage object with input and output token counts
+        self.assertIn("usage", data)
+        self.assertIn("input_tokens", data["usage"])
+        self.assertIn("output_tokens", data["usage"])
+        # For a token‑count request output_tokens should be 0 (no generation)
+        self.assertEqual(data["usage"]["output_tokens"], 0)
+
     def setUp(self):
         self.settings = SimpleNamespace(
             default_openai_model="gpt-4o-mini",
             openai_base_url="https://api.example.com/v1",
+            claude_api_key=None,
         )
 
     async def test_messages_endpoint_returns_claude_text_response(self):
@@ -657,8 +761,10 @@ class ClaudeMessagesAPITests(unittest.IsolatedAsyncioTestCase):
         }
 
         transport = httpx.ASGITransport(app=app)
-        with patch("app.main.get_backend", return_value=fake_backend), patch(
-            "app.main.get_settings", return_value=self.settings
+        with patch("claude_to_openai_forwarder.app.get_backend", return_value=fake_backend), patch(
+            "claude_to_openai_forwarder.app.get_settings", return_value=self.settings
+        ), patch(
+            "claude_to_openai_forwarder.middleware.auth.get_settings", return_value=self.settings
         ):
             async with httpx.AsyncClient(
                 transport=transport,
@@ -722,8 +828,10 @@ class ClaudeMessagesAPITests(unittest.IsolatedAsyncioTestCase):
         }
 
         transport = httpx.ASGITransport(app=app)
-        with patch("app.main.get_backend", return_value=fake_backend), patch(
-            "app.main.get_settings", return_value=self.settings
+        with patch("claude_to_openai_forwarder.app.get_backend", return_value=fake_backend), patch(
+            "claude_to_openai_forwarder.app.get_settings", return_value=self.settings
+        ), patch(
+            "claude_to_openai_forwarder.middleware.auth.get_settings", return_value=self.settings
         ):
             async with httpx.AsyncClient(
                 transport=transport,
@@ -776,8 +884,10 @@ class ClaudeMessagesAPITests(unittest.IsolatedAsyncioTestCase):
         }
 
         transport = httpx.ASGITransport(app=app)
-        with patch("app.main.get_backend", return_value=fake_backend), patch(
-            "app.main.get_settings", return_value=self.settings
+        with patch("claude_to_openai_forwarder.app.get_backend", return_value=fake_backend), patch(
+            "claude_to_openai_forwarder.app.get_settings", return_value=self.settings
+        ), patch(
+            "claude_to_openai_forwarder.middleware.auth.get_settings", return_value=self.settings
         ):
             async with httpx.AsyncClient(
                 transport=transport,
