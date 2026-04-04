@@ -5,16 +5,16 @@ name = "claude-to-openai-forwarder"
 version = "0.1.0"
 description = "A FastAPI service that translates Claude Messages API requests to OpenAI-compatible chat completions endpoints"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 
 dependencies = [
-    "fastapi==0.104.1",
-    "uvicorn[standard]==0.24.0",
-    "pydantic==2.5.0",
-    "pydantic-settings==2.1.0",
-    "httpx==0.25.2",
+    "fastapi>=0.115.0",           # Updated for better 3.13/3.14 support
+    "uvicorn[standard]>=0.30.0",  # Updated for compatibility
+    "pydantic>=2.12.0",           # CRITICAL: Minimum version for Python 3.14
+    "pydantic-settings>=2.6.0",   # Updated to match newer Pydantic
+    "httpx>=0.27.0",
     "python-dotenv==1.0.0",
-    "litellm==1.57.0"
+    "litellm>=1.57.0"
 ]
 
 [project.scripts]
