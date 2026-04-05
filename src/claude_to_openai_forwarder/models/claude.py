@@ -1,8 +1,21 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal, Union, Dict, Any
 
-
 class ClaudeContentBlock(BaseModel):
+    """Content block for messages or system prompts"""
+    type: str
+    text: Optional[str] = None
+    cache_control: Optional[Dict[str, Any]] = None
+    # For tool use
+    id: Optional[str] = None
+    name: Optional[str] = None
+    input: Optional[Dict[str, Any]] = None
+    
+    class Config:
+        # Exclude None values when serializing
+        exclude_none = True
+
+class ClaudeContentBlock1(BaseModel):
     """Content block for messages or system prompts"""
     type: str
     text: Optional[str] = None
@@ -47,6 +60,19 @@ class ClaudeUsage(BaseModel):
 
 
 class ClaudeResponse(BaseModel):
+    id: str
+    type: Literal["message"] = "message"
+    role: Literal["assistant"] = "assistant"
+    content: List[ClaudeContentBlock]
+    model: str
+    stop_reason: Optional[str] = None
+    stop_sequence: Optional[str] = None
+    usage: ClaudeUsage
+    
+    class Config:
+        exclude_none = True
+
+class ClaudeResponse1(BaseModel):
     id: str
     type: Literal["message"] = "message"
     role: Literal["assistant"] = "assistant"

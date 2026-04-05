@@ -19,6 +19,7 @@ class Settings(BaseSettings):
 
     # API Configuration
     openai_api_key: str
+    openai_api_key_list: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
     model_provider: str | None = None  # e.g. "openai", "nvidia_nim"
     claude_api_key: str | None = None

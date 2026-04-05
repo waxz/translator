@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from typing import List, Optional, Literal, Union, Dict, Any
-
+import json
 
 class OpenAIMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
@@ -8,7 +8,16 @@ class OpenAIMessage(BaseModel):
     name: Optional[str] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
     tool_call_id: Optional[str] = None
-
+    def to_json(self, indent: int = 2) -> str:
+        """
+        Serializes the model to a JSON string using json.dumps.
+        Excludes None values to maintain OpenAI API compatibility.
+        """
+        # Convert to dict first, excluding fields that are None
+        model_dict = self.model_dump(exclude_none=True)
+        
+        # Use standard json.dumps for the final string
+        return json.dumps(model_dict, indent=indent, ensure_ascii=False)
 
 class OpenAIRequest(BaseModel):
     model: str

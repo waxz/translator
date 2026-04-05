@@ -5,17 +5,20 @@ from typing import Any, Dict, List, Optional, Union
 from claude_to_openai_forwarder.config import get_settings
 from claude_to_openai_forwarder.models.claude import ClaudeMessage, ClaudeRequest
 from claude_to_openai_forwarder.models.openai import OpenAIMessage, OpenAIRequest
-
+from claude_to_openai_forwarder.translators.tool_prompt import tools_to_prompt ,parse_tool_call
 logger = logging.getLogger(__name__)
 
 
 class RequestTranslator:
     """Translate Claude-style requests into OpenAI chat completions requests."""
 
+
     @classmethod
     def translate(
         cls, claude_req: ClaudeRequest, default_model: Optional[str] = None
     ) -> OpenAIRequest:
+        logger.info("RequestTranslator: Starting translation")
+        
         settings = get_settings()
         if default_model is None:
             default_model = settings.default_openai_model
@@ -28,11 +31,18 @@ class RequestTranslator:
             claude_req.tools,
             use_prompt_tool_mode=use_prompt_tool_mode,
         )
+
+
         model = settings.claude_model_map.get(claude_req.model, default_model)
 
         logger.info(
             "Translating Claude model %s to upstream model %s", claude_req.model, model
         )
+        openai_messages = []
+        for m in messages:
+            s = json.dumps(m.model_dump(exclude_none=True))
+            logger.info(f"-> {s[:100]}")
+
 
         return OpenAIRequest(
             model=model,
@@ -66,7 +76,7 @@ class RequestTranslator:
                 system_parts.append(system_content)
 
         if tools and settings.force_tool_in_prompt:
-            tool_prompt = cls._tools_to_prompt(tools)
+            tool_prompt = tools_to_prompt(tools)# cls._tools_to_prompt(tools)
             if tool_prompt:
                 system_parts.append(tool_prompt)
                 logger.info("Embedded %s tools into the system prompt", len(tools))

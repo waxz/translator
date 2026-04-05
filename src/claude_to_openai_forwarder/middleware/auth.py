@@ -3,6 +3,29 @@ from typing import Optional
 
 from claude_to_openai_forwarder.config import get_settings
 
+def rotate_by_key_string(current_key, api_list_str):
+    """
+    Finds the current_key in the list to determine its ID, 
+    then rotates to the next key.
+    """
+    # Convert semicolon-separated string to a Python list
+    if not api_list_str:
+        raise ValueError(f"api_list_str is not valid :{api_list_str}")
+    keys = api_list_str.split(";")
+    if len(keys) == 0:
+        raise ValueError(f"len(keys) == 0")
+    try:
+        # 1. Search for the current key to find its ID (index)
+        current_id = keys.index(current_key)
+    except ValueError:
+        # 2. If not found, default to -1 so rotation starts at 0
+        current_id = -1
+        
+    # 3. Rotate to next index (round for list length using modulo)
+    next_id = (current_id + 1) % len(keys)
+    
+    return keys[next_id]
+
 
 async def verify_claude_api_key(x_api_key: Optional[str] = Header(None)):
     """

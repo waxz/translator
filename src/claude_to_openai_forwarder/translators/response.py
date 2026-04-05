@@ -1,12 +1,16 @@
 import time
 import json
-from typing import List, Optional
+from typing import List, Dict, Any, Optional
+from claude_to_openai_forwarder.config import get_settings
+
 from claude_to_openai_forwarder.models.openai import OpenAIResponse, OpenAIChoice, OpenAIMessage
 from claude_to_openai_forwarder.models.claude import ClaudeResponse, ClaudeContentBlock, ClaudeUsage
 import logging
+import re
+from claude_to_openai_forwarder.translators.tool_prompt import tools_to_prompt ,parse_all_tool_calls,parse_tool_call
 
 logger = logging.getLogger(__name__)
-
+logger.setLevel(logging.DEBUG)
 
 class ResponseTranslator:
     """Translates OpenAI API responses to Claude format"""
@@ -15,11 +19,18 @@ class ResponseTranslator:
     def translate(cls, openai_resp: OpenAIResponse) -> ClaudeResponse:
         """Convert OpenAI response to Claude format"""
 
+        settings = get_settings()
+
+
         # Get the first choice (Claude doesn't support multiple choices)
         choice = openai_resp.choices[0]
-
-        # Convert content and tool calls
-        content_blocks = cls._convert_content(choice.message)
+        message = choice.message
+        if settings.force_tool_in_prompt:
+            # Extract tool call from text (for NVIDIA NIM)
+            content_blocks = cls._parse_text_content(message.content)
+        else:
+            # Convert content and tool calls
+            content_blocks = cls._convert_content(message)
 
         # Map stop reason - pass content_blocks to check for tool_use
         stop_reason = cls._map_stop_reason(choice.finish_reason, content_blocks)
@@ -70,28 +81,34 @@ class ResponseTranslator:
                         ClaudeContentBlock(type="text", text=content_text)
                     )
 
-        # Handle tool calls - CRITICAL for Claude Code
+        # Handle tool calls - FIXED: Access as dictionary
         if message.tool_calls:
             logger.info(f"Converting {len(message.tool_calls)} tool calls")
             for tool_call in message.tool_calls:
+                # tool_call is a Dict[str, Any]
+                tool_id = tool_call.get("id", f"toolu_{int(time.time() * 1000)}")
+                function_data = tool_call.get("function", {})
+                tool_name = function_data.get("name", "")
+                tool_args = function_data.get("arguments", {})
+
                 # Parse arguments if they're a string
-                tool_input = tool_call.get("function", {}).get("arguments", {})
-                if isinstance(tool_input, str):
+                if isinstance(tool_args, str):
                     try:
-                        tool_input = json.loads(tool_input)
-                    except json.JSONDecodeError:
-                        logger.warning(f"Failed to parse tool arguments: {tool_input}")
-                        tool_input = {"raw": tool_input}
+                        tool_args = json.loads(tool_args)
+                        logger.info(f"Parsed tool arguments: {tool_args}")
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Failed to parse tool arguments: {tool_args}, error: {e}")
+                        tool_args = {"raw": tool_args}
 
                 tool_block = ClaudeContentBlock(
                     type="tool_use",
-                    id=tool_call.get("id", f"toolu_{int(time.time() * 1000)}"),
-                    name=tool_call.get("function", {}).get("name", ""),
-                    input=tool_input,
+                    id=tool_id,
+                    name=tool_name,
+                    input=tool_args,
                 )
                 content_blocks.append(tool_block)
                 logger.info(
-                    f"Added tool_use block: {tool_block.name} with id {tool_block.id}"
+                    f"Added tool_use block: {tool_block.name} with id {tool_block.id}, input keys: {list(tool_args.keys()) if isinstance(tool_args, dict) else 'not a dict'}"
                 )
 
         # Default to empty text if no content
@@ -99,6 +116,80 @@ class ResponseTranslator:
             content_blocks.append(ClaudeContentBlock(type="text", text=""))
 
         return content_blocks
+
+
+    @classmethod
+    def _parse_tool_call(cls, text: str) -> Optional[Dict[str, Any]]:
+        """Extract tool call from response text"""
+        # Find JSON object with type: tool_use
+        match = re.search(r'\{[^{}]*"type"\s*:\s*"tool_use"[^{}]*\}', text, re.DOTALL)
+        if not match:
+            return None
+        
+        try:
+            data = json.loads(match.group(0))
+            if data.get("type") == "tool_use" and data.get("name"):
+                # Add ID if missing
+                if "id" not in data:
+                    data["id"] = f"call_{int(time.time() * 1000)}"
+                return data
+        except json.JSONDecodeError:
+            pass
+        
+        return None
+
+
+
+
+    @classmethod
+    def _parse_text_content(cls, content: str) -> List[ClaudeContentBlock]:
+        """Parse tool calls from text content (for NVIDIA NIM)"""
+        logger.info(f"_parse_text_content called with content length: {len(content) if content else 0}")
+        if not content:
+            return [ClaudeContentBlock(type="text", text="")]
+
+        # Extract all tool calls with positions
+        tool_matches = parse_all_tool_calls(content)
+        logger.info(f"_parse_text_content found {len(tool_matches)} tool matches")
+
+        if not tool_matches:
+            logger.debug("No tool calls found, returning text content")
+            return [ClaudeContentBlock(type="text", text=content)]
+
+        blocks = []
+        last_end = 0
+
+        for match in tool_matches:
+            logger.debug(f"Processing tool match: {match}")
+            # Text before tool call
+            if match["start"] > last_end:
+                text_before = content[last_end:match["start"]].strip()
+                if text_before:
+                    blocks.append(ClaudeContentBlock(type="text", text=text_before))
+                    logger.debug(f"Added text block before tool: {text_before[:100]}...")
+
+            # Tool call
+            tool_call = match["tool_call"]
+            logger.info(f"Adding tool_use block: name={tool_call.get('name')}, id={tool_call.get('id')}")
+            blocks.append(ClaudeContentBlock(
+                type="tool_use",
+                id=tool_call["id"],
+                name=tool_call["name"],
+                input=tool_call.get("input", {})
+            ))
+
+            last_end = match["end"]
+
+        # Text after last tool call
+        if last_end < len(content):
+            text_after = content[last_end:].strip()
+            if text_after:
+                blocks.append(ClaudeContentBlock(type="text", text=text_after))
+                logger.debug(f"Added text block after last tool: {text_after[:100]}...")
+
+        logger.info(f"_parse_text_content returning {len(blocks)} blocks")
+        return blocks if blocks else [ClaudeContentBlock(type="text", text="")]
+
 
     @classmethod
     def _parse_tool_use_from_text(cls, text: str) -> Optional[ClaudeContentBlock]:

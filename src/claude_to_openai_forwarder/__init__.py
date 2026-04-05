@@ -8,4 +8,4 @@ def main():
     app.run_server()
 
 # Optionally expose other important items at package level
-__all__ = ["app", "server"]
+__all__ = ["app"]

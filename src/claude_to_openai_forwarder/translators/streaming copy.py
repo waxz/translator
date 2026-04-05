@@ -6,8 +6,6 @@ from claude_to_openai_forwarder.models.claude import ClaudeStreamEvent, ClaudeUs
 from claude_to_openai_forwarder.translators.response import ResponseTranslator
 from claude_to_openai_forwarder.translators.tool_prompt import parse_all_tool_calls
 from claude_to_openai_forwarder.models.claude import ClaudeContentBlock
-from claude_to_openai_forwarder.config import get_settings
-
 import logging
 
 logger = logging.getLogger(__name__)
@@ -31,10 +29,6 @@ class StreamingTranslator:
         5. message_delta (includes stop_reason and usage)
         6. message_stop
         """
-        settings = get_settings()
-        force_tool_in_prompt = settings.force_tool_in_prompt
-
-
 
         message_id = f"msg_{int(time.time() * 1000)}"
         content_blocks: List[Dict[str, Any]] = []
@@ -94,62 +88,12 @@ class StreamingTranslator:
 
                         # Handle text content delta
                         if "content" in delta and delta["content"]:
-                            content = delta["content"]
-                            buffered_text += content
-                            buffered_text_segments.append(content)
-
-                            # For NIM mode: accumulate and try to parse JSON incrementally
-                            # Similar to the pattern: buffer += content; try: json.loads(buffer)
-                            if force_tool_in_prompt:
-                                # Check if we have a complete JSON object that can be parsed
-                                complete_blocks = cls._extract_complete_tool_calls(buffered_text)
-                                if complete_blocks:
-                                    for block in complete_blocks:
-                                        if block["type"] == "text":
-                                            # Emit text prefix
-                                            current_block_index = len(content_blocks)
-                                            content_blocks.append(block)
-                                            yield cls._format_sse("content_block_start", {
-                                                "type": "content_block_start",
-                                                "index": current_block_index,
-                                                "content_block": {"type": "text", "text": ""}
-                                            })
-                                            yield cls._format_sse("content_block_delta", {
-                                                "type": "content_block_delta",
-                                                "index": current_block_index,
-                                                "delta": {"type": "text_delta", "text": block["text"]}
-                                            })
-                                            yield cls._format_sse("content_block_stop", {
-                                                "type": "content_block_stop", "index": current_block_index
-                                            })
-                                        elif block["type"] == "tool_use":
-                                            # Emit tool_use block
-                                            current_block_index = len(content_blocks)
-                                            content_blocks.append(block)
-                                            yield cls._format_sse("content_block_start", {
-                                                "type": "content_block_start",
-                                                "index": current_block_index,
-                                                "content_block": {
-                                                    "type": "tool_use",
-                                                    "id": block["id"],
-                                                    "name": block["name"]
-                                                }
-                                            })
-                                            yield cls._format_sse("content_block_delta", {
-                                                "type": "content_block_delta",
-                                                "index": current_block_index,
-                                                "delta": {
-                                                    "type": "input_json_delta",
-                                                    "partial_json": json.dumps(block.get("input", {}))
-                                                }
-                                            })
-                                            yield cls._format_sse("content_block_stop", {
-                                                "type": "content_block_stop", "index": current_block_index
-                                            })
-                                    # Remove processed content from buffer
-                                    last_end = complete_blocks[-1].get("end_pos", 0)
-                                    buffered_text = buffered_text[last_end:]
-                                    buffered_text_segments = []
+                            buffered_text += delta["content"]
+                            buffered_text_segments.append(delta["content"])
+                            # Check if buffered text contains a complete tool_use JSON
+                            # This is important for NIM which embeds tools in text
+                            if '"type"' in buffered_text and '"tool_use"' in buffered_text and buffered_text.count('{') == buffered_text.count('}'):
+                                logger.debug("Detected potential complete tool_use JSON, will flush on finish")
 
                         # Handle native tool calls (OpenAI format)
                         if "tool_calls" in delta and delta["tool_calls"]:
@@ -258,12 +202,27 @@ class StreamingTranslator:
                             old_finish_reason = finish_reason
                             finish_reason = choice["finish_reason"]
                             # When finish_reason is set and we have buffered text,
-                            # flush immediately to extract any embedded tool calls
-                            # This is ONLY done for NIM provider (force_tool_in_prompt=True)
-                            # OpenAI native format sends tool calls separately
+                            # check if it looks like a complete tool call before flushing
+                            # This is critical for NIM provider which embeds tools in text
                             if buffered_text and old_finish_reason is None:
-                                logger.info(f"Stream finishing with finish_reason={finish_reason}, buffered_text length: {len(buffered_text)}, force_tool_in_prompt={force_tool_in_prompt}")
-                                if force_tool_in_prompt:
+                                # Check if we have what looks like a complete tool call
+                                # Heuristic: check for both opening and closing braces matching
+                                open_count = buffered_text.count('{')
+                                close_count = buffered_text.count('}')
+                                looks_complete = open_count == close_count and open_count > 0
+
+                                # Also check for alternative format <tool_call>
+                                has_alt_format = '<tool_call>' in buffered_text
+                                if has_alt_format:
+                                    # For alt format, check if JSON part seems complete
+                                    # Must have opening AND closing brace
+                                    alt_match = re.search(r'<tool_call>\s*\w+\s*\n(\{[\s\S]*\})', buffered_text)
+                                    looks_complete = bool(alt_match)
+                                    if not looks_complete:
+                                        logger.warning(f"Alternative format tool_call has incomplete JSON: {repr(buffered_text[:150])}")
+
+                                if looks_complete:
+                                    logger.info(f"Stream finishing with complete-looking tool call, finish_reason={finish_reason}")
                                     logger.debug(f"Buffered text preview: {repr(buffered_text[:300])}")
                                     (
                                         buffered_events,
@@ -275,13 +234,13 @@ class StreamingTranslator:
                                         current_block_index=current_block_index,
                                         buffered_text=buffered_text,
                                         buffered_text_segments=buffered_text_segments,
-                                        force_tool_in_prompt=True,
                                     )
                                     for event in buffered_events:
                                         yield event
                                 else:
-                                    # For OpenAI native, just emit text without tool extraction
-                                    logger.debug(f"OpenAI native mode: flushing text without tool extraction")
+                                    logger.info(f"Stream finishing but content doesn't look complete: braces={open_count}/{close_count}, buffered_len={len(buffered_text)}")
+                                    # Still flush what we have
+                                    logger.info(f"Flushing incomplete buffer: {repr(buffered_text[:200])}")
                                     (
                                         buffered_events,
                                         current_block_index,
@@ -292,7 +251,6 @@ class StreamingTranslator:
                                         current_block_index=current_block_index,
                                         buffered_text=buffered_text,
                                         buffered_text_segments=buffered_text_segments,
-                                        force_tool_in_prompt=False,
                                     )
                                     for event in buffered_events:
                                         yield event
@@ -328,7 +286,7 @@ class StreamingTranslator:
                 except json.JSONDecodeError as e:
                     logger.warning(f"Failed to parse trailing SSE data: {e}")
 
-        # Final flush at end of stream
+        # Only do final flush if we haven't already flushed the content
         if buffered_text:
             (
                 buffered_events,
@@ -340,7 +298,6 @@ class StreamingTranslator:
                 current_block_index=current_block_index,
                 buffered_text=buffered_text,
                 buffered_text_segments=buffered_text_segments,
-                force_tool_in_prompt=force_tool_in_prompt,
             )
             for event in buffered_events:
                 yield event
@@ -422,21 +379,6 @@ class StreamingTranslator:
         return mapping.get(finish_reason, "end_turn")
 
     @staticmethod
-    def _parse_tool_use_from_text(text: str):
-        return ResponseTranslator._parse_tool_use_from_text(text)
-
-    @staticmethod
-    def _looks_like_json_tool_use(text: str) -> bool:
-        stripped = text.lstrip()
-        if not stripped:
-            return True
-        if stripped.startswith("{"):
-            return True
-        if '{"type"' in stripped or '"tool_use"' in stripped:
-            return True
-        return False
-
-    @staticmethod
     def _format_sse(event_type: str, data: dict) -> str:
         """Format data as Server-Sent Event"""
         return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
@@ -480,18 +422,25 @@ class StreamingTranslator:
         current_block_index: int,
         buffered_text: str,
         buffered_text_segments: List[str],
-        force_tool_in_prompt: bool = False,
     ) -> Tuple[List[str], int, str, List[str]]:
-        """Flush buffered text, extracting any embedded tool calls."""
-        logger.info(f"_flush_buffered_text called with text length: {len(buffered_text)}, force_tool_in_prompt={force_tool_in_prompt}")
+        """Flush buffered text, extracting any embedded tool calls.
+
+        Returns:
+            Tuple of (events, current_block_index, remaining_text, remaining_segments)
+            If remaining_text is not empty, the caller should keep buffering.
+        """
+        logger.info(f"_flush_buffered_text called with text length: {len(buffered_text)}")
         if not buffered_text:
             return [], current_block_index, buffered_text, buffered_text_segments
 
-        if force_tool_in_prompt:
-            prefix_text, parsed_tool_use = cls._split_embedded_tool_use(buffered_text)
-        else:
-            prefix_text = buffered_text
-            parsed_tool_use = None
+        prefix_text, parsed_tool_use = cls._split_embedded_tool_use(buffered_text)
+
+        # If prefix_text is empty string and parsed_tool_use is None,
+        # it means the content is incomplete - keep buffering
+        if prefix_text == "" and parsed_tool_use is None:
+            logger.info("Content appears incomplete, keeping in buffer")
+            return [], current_block_index, buffered_text, buffered_text_segments
+
         events: List[str] = []
 
         if prefix_text:
@@ -578,6 +527,31 @@ class StreamingTranslator:
         """Extract tool calls from accumulated text using parse_all_tool_calls."""
         logger.info(f"_split_embedded_tool_use called with text length: {len(text)}")
         logger.debug(f"Text content: {repr(text[:500])}...")
+
+        # Check if text looks like it might contain an incomplete tool call
+        # If so, don't flush it yet - wait for more content
+        has_tool_marker = '"tool_use"' in text or '<tool_call>' in text
+        has_opening_brace = '{' in text
+
+        if has_tool_marker and has_opening_brace:
+            # Check if braces are balanced
+            open_count = text.count('{')
+            close_count = text.count('}')
+
+            # For alternative format <tool_call>, check specific pattern
+            if '<tool_call>' in text:
+                # Check if we have complete <tool_call> format
+                alt_pattern = r'<tool_call>\s*\w+\s*\n(\{[\s\S]*\})'
+                alt_match = re.search(alt_pattern, text)
+                if not alt_match and open_count > close_count:
+                    # Incomplete tool_call - keep buffer
+                    logger.debug(f"Incomplete <tool_call> detected, keeping in buffer")
+                    return "", None
+            elif open_count > close_count:
+                # Unbalanced braces - likely incomplete JSON
+                logger.debug(f"Unbalanced braces: {open_count}/{close_count}, keeping in buffer")
+                return "", None
+
         tool_matches = parse_all_tool_calls(text)
         logger.info(f"_split_embedded_tool_use found {len(tool_matches)} tool matches")
 
@@ -600,51 +574,3 @@ class StreamingTranslator:
         )
 
         return prefix, parsed
-
-    @classmethod
-    def _extract_complete_tool_calls(cls, text: str) -> List[Dict[str, Any]]:
-        """
-        Extract any complete tool calls from accumulated text.
-        Similar to the pattern: buffer += content; try json.loads(buffer)
-
-        Returns list of parsed blocks with 'type', 'end_pos' keys.
-        """
-        from claude_to_openai_forwarder.translators.tool_prompt import parse_all_tool_calls
-
-        logger.debug(f"_extract_complete_tool_calls called with text length: {len(text)}")
-
-        blocks = []
-        last_end = 0
-
-        # Find all potential JSON objects in text
-        # Look for patterns like {"type": "tool_use"...} or <tool_call>...
-
-        # First try standard format
-        tool_matches = parse_all_tool_calls(text)
-        if tool_matches:
-            for match in tool_matches:
-                start_pos = match["start"]
-                end_pos = match["end"]
-                tool_call = match["tool_call"]
-
-                # Text before this tool call
-                if start_pos > last_end:
-                    text_before = text[last_end:start_pos].rstrip()
-                    if text_before:
-                        blocks.append({
-                            "type": "text",
-                            "text": text_before,
-                            "end_pos": start_pos
-                        })
-
-                blocks.append({
-                    "type": "tool_use",
-                    "id": tool_call.get("id", f"toolu_{int(time.time() * 1000)}"),
-                    "name": tool_call["name"],
-                    "input": tool_call.get("input", {}),
-                    "end_pos": end_pos
-                })
-
-                last_end = end_pos
-
-        return blocks
