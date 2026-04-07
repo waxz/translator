@@ -1,6 +1,15 @@
-from fastapi import FastAPI, Response, Depends, HTTPException, status, Request as FastAPIRequest
+from fastapi import (
+    FastAPI,
+    Response,
+    Depends,
+    HTTPException,
+    status,
+    Request as FastAPIRequest,
+)
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
+
+
 from pydantic import ValidationError
 from contextlib import asynccontextmanager
 import logging
@@ -9,21 +18,34 @@ import json
 import time
 from typing import AsyncGenerator
 
-from claude_to_openai_forwarder.config import get_settings,SETTINGS
-from claude_to_openai_forwarder.models.claude import ClaudeRequest, ClaudeResponse, ClaudeUsage, ClaudeContentBlock
+from claude_to_openai_forwarder.config import get_settings
+from claude_to_openai_forwarder.models.claude import (
+    ClaudeRequest,
+    ClaudeResponse,
+    ClaudeUsage,
+    ClaudeContentBlock,
+)
 from claude_to_openai_forwarder.backends import get_backend, get_backend_name
 from claude_to_openai_forwarder.translators.request import RequestTranslator
 from claude_to_openai_forwarder.translators.response import ResponseTranslator
 from claude_to_openai_forwarder.translators.streaming import StreamingTranslator
-from claude_to_openai_forwarder.middleware.auth import verify_claude_api_key, rotate_by_key_string
-from claude_to_openai_forwarder.utils.exceptions import handle_openai_error, OpenAIAPIError
+from claude_to_openai_forwarder.middleware.auth import (
+    verify_claude_api_key,
+    rotate_by_key_string,
+)
+from claude_to_openai_forwarder.utils.exceptions import (
+    handle_openai_error,
+    OpenAIAPIError,
+)
+from claude_to_openai_forwarder.utils.rate_limit import check_rate_limit
 
 # Setup logging with more detail
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s"
+    format="%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -42,12 +64,14 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Shutting down...")
 
+
 app = FastAPI(
     title="Claude-to-OpenAI API Forwarder",
     description="Forwards Claude API requests to OpenAI-compatible backends",
     version="1.0.0",
     lifespan=lifespan,
 )
+
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(
@@ -92,6 +116,7 @@ async def validation_exception_handler(
         },
     )
 
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: FastAPIRequest, exc: HTTPException):
     """
@@ -114,6 +139,7 @@ async def http_exception_handler(request: FastAPIRequest, exc: HTTPException):
             },
         },
     )
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: FastAPIRequest, exc: Exception):
@@ -141,25 +167,25 @@ async def global_exception_handler(request: FastAPIRequest, exc: Exception):
         },
     )
 
+
 @app.get("/rotate")
 async def rotate(
     # api_key: str = Depends(verify_claude_api_key),
 ):
-    
-    next_key = rotate_by_key_string(SETTINGS.openai_api_key, SETTINGS.openai_api_key_list)
-    SETTINGS.openai_api_key = next_key
+
+    settings = get_settings()
+    next_key = rotate_by_key_string(
+        settings.openai_api_key, settings.openai_api_key_list
+    )
+    settings.openai_api_key = next_key
     return Response(
-        content=None, 
-        headers={
-            "X-Model-Ready": "true",
-            "X-Rate-Limit-Remaining": "500"
-        }
+        content=None, headers={"X-Model-Ready": "true", "X-Rate-Limit-Remaining": "500"}
     )
 
-    
+
 @app.post("/v1/messages")
 async def create_message(
-    raw_request: FastAPIRequest,
+    request: FastAPIRequest,
     api_key: str = Depends(verify_claude_api_key),
 ):
     """
@@ -172,6 +198,7 @@ async def create_message(
 
     try:
         settings = get_settings()
+        # check_rate_limit(api_key, SETTINGS.rate_limit_rpm)
         client = get_backend()
 
         logger.info("\n" + "=" * 80)
@@ -180,7 +207,7 @@ async def create_message(
         logger.info("=" * 80)
 
         # Parse body
-        body = await raw_request.body()
+        body = await request.body()
         body_str = body.decode()
 
         try:
@@ -221,9 +248,7 @@ async def create_message(
 
         # Translate Claude request to OpenAI format
         logger.info(f"[{request_id}] Translating to OpenAI format...")
-        openai_request = RequestTranslator.translate(
-            request
-        )
+        openai_request = RequestTranslator.translate(request)
 
         # Log translated request
         openai_dict = openai_request.model_dump(exclude_none=True)
@@ -237,10 +262,14 @@ async def create_message(
                 try:
                     openai_stream = client.create_completion_stream(openai_request)
                     event_count = 0
-                    async for event in StreamingTranslator.translate_stream(openai_stream):
+                    async for event in StreamingTranslator.translate_stream(
+                        openai_stream
+                    ):
                         event_count += 1
                         if event_count % 10 == 0:
-                            logger.debug(f"[{request_id}] Streamed {event_count} events")
+                            logger.debug(
+                                f"[{request_id}] Streamed {event_count} events"
+                            )
                         yield event
                     logger.info(f"[{request_id}] Stream complete: {event_count} events")
                 except Exception as e:
@@ -280,25 +309,26 @@ async def create_message(
         serialized = claude_response.model_dump(exclude_none=True)
 
         # Final validation - check for tool_use blocks
-        content_blocks = serialized.get('content', [])
-        has_tool_use = any(b.get('type') == 'tool_use' for b in content_blocks)
-        logger.info(f"[{request_id}] Final response has {len(content_blocks)} content blocks, tool_use={has_tool_use}")
+        content_blocks = serialized.get("content", [])
+        has_tool_use = any(b.get("type") == "tool_use" for b in content_blocks)
+        logger.info(
+            f"[{request_id}] Final response has {len(content_blocks)} content blocks, tool_use={has_tool_use}"
+        )
 
         if has_tool_use:
             logger.info(f"[{request_id}] Tool use details:")
             for i, block in enumerate(content_blocks):
-                if block.get('type') == 'tool_use':
+                if block.get("type") == "tool_use":
                     logger.info(f"  [{i}] {block.get('name')} (id: {block.get('id')})")
-                    logger.info(f"      input: {json.dumps(block.get('input', {}))[:200]}...")
+                    logger.info(
+                        f"      input: {json.dumps(block.get('input', {}))[:200]}..."
+                    )
 
         request_duration = time.time() - request_start
         logger.info(f"[{request_id}] Request completed in {request_duration:.2f}s")
         logger.info("=" * 80 + "\n")
 
-        return JSONResponse(
-            content=serialized,
-            headers={"X-Request-ID": request_id}
-        )
+        return JSONResponse(content=serialized, headers={"X-Request-ID": request_id})
 
     except HTTPException:
         raise
@@ -316,20 +346,22 @@ async def create_message(
             },
         )
 
+
 @app.head("/")
 async def get_status():
     """
-    Returns headers indicating model availability and version 
+    Returns headers indicating model availability and version
     without running any inference.
     """
     return Response(
-        content=None, 
+        content=None,
         headers={
             "X-Model-Ready": "true",
             "X-Model-Version": "llama-3.1-70b",
-            "X-Rate-Limit-Remaining": "500"
-        }
+            "X-Rate-Limit-Remaining": "500",
+        },
     )
+
 
 @app.post("/v1/messages/count_tokens")
 async def count_tokens(
@@ -353,7 +385,7 @@ async def count_tokens(
                 "type": "error",
                 "error": {
                     "type": "invalid_request_error",
-                    "message": f"Invalid request: {str(e)}"
+                    "message": f"Invalid request: {str(e)}",
                 },
             },
         )
@@ -384,6 +416,7 @@ async def count_tokens(
         usage=usage,
     ).model_dump(exclude_none=True)
 
+
 @app.get("/v1/models")
 async def list_models(api_key: str = Depends(verify_claude_api_key)):
     """
@@ -391,7 +424,7 @@ async def list_models(api_key: str = Depends(verify_claude_api_key)):
 
     Returns a list of models in the Claude-compatible format.
     """
-    
+
     return {
         "object": "list",
         "data": [
@@ -405,6 +438,7 @@ async def list_models(api_key: str = Depends(verify_claude_api_key)):
         ],
     }
 
+
 def run_server():
     """
     Run the server with command-line arguments.
@@ -414,12 +448,16 @@ def run_server():
     import argparse
     import uvicorn
 
-    parser = argparse.ArgumentParser(description='Run Claude-to-OpenAI API Forwarder')
-    parser.add_argument('--host', type=str, help='Host to bind the API to')
-    parser.add_argument('--port', type=int, help='Port to bind the API to')
-    parser.add_argument('--reload', action='store_true', help='Enable auto-reload')
-    parser.add_argument('--log-level', type=str, choices=['debug', 'info', 'warning', 'error'],
-                       help='Log level')
+    parser = argparse.ArgumentParser(description="Run Claude-to-OpenAI API Forwarder")
+    parser.add_argument("--host", type=str, help="Host to bind the API to")
+    parser.add_argument("--port", type=int, help="Port to bind the API to")
+    parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        choices=["debug", "info", "warning", "error"],
+        help="Log level",
+    )
     args = parser.parse_args()
 
     settings = get_settings()
@@ -431,6 +469,7 @@ def run_server():
         log_level=args.log_level or settings.log_level.lower(),
         reload=args.reload,
     )
+
 
 if __name__ == "__main__":
     run_server()

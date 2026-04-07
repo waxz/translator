@@ -49,7 +49,7 @@ def parse_all_tool_calls(text: str) -> List[Dict[str, Any]]:
     # First try alternative format: <tool_call>name{...} or <tool_call> name {...}
     # Pattern: <tool_call> followed by tool name (word chars + underscores), optional whitespace, then JSON
     # The JSON may contain newlines which are invalid - we try to parse and fix
-    alt_pattern = r'<tool_call>\s*([\w_]+)\s*(\{[\s\S]*?\})'
+    alt_pattern = r"<tool_call>\s*([\w_]+)\s*(\{[\s\S]*?\})"
     for match in re.finditer(alt_pattern, text):
         tool_name = match.group(1)
         json_str = match.group(2)
@@ -66,16 +66,18 @@ def parse_all_tool_calls(text: str) -> List[Dict[str, Any]]:
                 input_data = json.loads(fixed_str)
                 logger.debug(f"Fixed JSON for {tool_name}")
 
-            results.append({
-                "tool_call": {
-                    "type": "tool_use",
-                    "name": tool_name,
-                    "id": f"call_{int(time.time() * 1000)}_{len(results)}",
-                    "input": input_data
-                },
-                "start": start_pos,
-                "end": end_pos
-            })
+            results.append(
+                {
+                    "tool_call": {
+                        "type": "tool_use",
+                        "name": tool_name,
+                        "id": f"call_{int(time.time() * 1000)}_{len(results)}",
+                        "input": input_data,
+                    },
+                    "start": start_pos,
+                    "end": end_pos,
+                }
+            )
             logger.info(f"Successfully parsed alternative tool_call: {tool_name}")
         except (json.JSONDecodeError, ValueError) as e:
             logger.debug(f"Failed to parse alternative format: {e}")
@@ -99,7 +101,7 @@ def parse_all_tool_calls(text: str) -> List[Dict[str, Any]]:
             if escape:
                 escape = False
                 continue
-            if char == '\\':
+            if char == "\\":
                 escape = True
                 continue
             if char == '"':
@@ -107,9 +109,9 @@ def parse_all_tool_calls(text: str) -> List[Dict[str, Any]]:
                 continue
 
             if not in_string:
-                if char == '{':
+                if char == "{":
                     depth += 1
-                elif char == '}':
+                elif char == "}":
                     depth -= 1
                     if depth == 0:
                         end_pos = i + 1
@@ -121,12 +123,16 @@ def parse_all_tool_calls(text: str) -> List[Dict[str, Any]]:
                             if data.get("type") == "tool_use" and data.get("name"):
                                 if "id" not in data:
                                     data["id"] = f"call_{int(time.time() * 1000)}"
-                                results.append({
-                                    "tool_call": data,
-                                    "start": start_pos,
-                                    "end": end_pos
-                                })
-                                logger.info(f"Successfully parsed tool_use: {data.get('name')} with id {data.get('id')}")
+                                results.append(
+                                    {
+                                        "tool_call": data,
+                                        "start": start_pos,
+                                        "end": end_pos,
+                                    }
+                                )
+                                logger.info(
+                                    f"Successfully parsed tool_use: {data.get('name')} with id {data.get('id')}"
+                                )
                             else:
                                 logger.debug(f"JSON missing required fields: {data}")
                         except json.JSONDecodeError as e:
@@ -134,27 +140,57 @@ def parse_all_tool_calls(text: str) -> List[Dict[str, Any]]:
                             # Try to fix common issues: unescaped control characters
                             try:
                                 fixed_str = _fix_json_control_chars(json_str)
-                                logger.debug(f"Fixed JSON string length: {len(fixed_str)} (was {len(json_str)})")
+                                logger.debug(
+                                    f"Fixed JSON string length: {len(fixed_str)} (was {len(json_str)})"
+                                )
                                 data = json.loads(fixed_str)
                                 if data.get("type") == "tool_use" and data.get("name"):
                                     if "id" not in data:
                                         data["id"] = f"call_{int(time.time() * 1000)}"
-                                    results.append({
-                                        "tool_call": data,
-                                        "start": start_pos,
-                                        "end": end_pos
-                                    })
-                                    logger.info(f"Successfully parsed tool_use after fixing: {data.get('name')}")
+                                    results.append(
+                                        {
+                                            "tool_call": data,
+                                            "start": start_pos,
+                                            "end": end_pos,
+                                        }
+                                    )
+                                    logger.info(
+                                        f"Successfully parsed tool_use after fixing: {data.get('name')}"
+                                    )
                                 else:
-                                    logger.debug(f"Fixed JSON missing required fields: {data}")
+                                    logger.debug(
+                                        f"Fixed JSON missing required fields: {data}"
+                                    )
                             except (json.JSONDecodeError, ValueError) as e2:
                                 logger.debug(f"Failed to parse even after fixing: {e2}")
-                                # Log a preview of what we're trying to fix for debugging
-                                if len(json_str) > 5000:
-                                    logger.debug(f"Problematic JSON around error (4900-5100): {repr(json_str[4900:5100])}")
+                                # Try fuzzy extraction as last resort
+                                fuzzy_data = _extract_json_fuzzy(text, start_pos)
+                                if (
+                                    fuzzy_data
+                                    and fuzzy_data.get("type") == "tool_use"
+                                    and fuzzy_data.get("name")
+                                ):
+                                    if "id" not in fuzzy_data:
+                                        fuzzy_data["id"] = (
+                                            f"call_{int(time.time() * 1000)}"
+                                        )
+                                    results.append(
+                                        {
+                                            "tool_call": fuzzy_data,
+                                            "start": start_pos,
+                                            "end": end_pos,
+                                        }
+                                    )
+                                    logger.info(
+                                        f"Successfully parsed tool_use via fuzzy extraction: {fuzzy_data.get('name')}"
+                                    )
+                                else:
+                                    logger.debug(f"Fuzzy extraction also failed")
                         break
 
-    logger.info(f"parse_all_tool_calls found {len(results)} tool calls (alt_format + standard)")
+    logger.info(
+        f"parse_all_tool_calls found {len(results)} tool calls (alt_format + standard)"
+    )
     return results
 
 
@@ -175,7 +211,7 @@ def _fix_json_control_chars(json_str: str) -> str:
             result.append(char)
             escape = False
             continue
-        if char == '\\':
+        if char == "\\":
             result.append(char)
             escape = True
             continue
@@ -186,19 +222,19 @@ def _fix_json_control_chars(json_str: str) -> str:
 
         if in_string and ord(char) < 0x20:
             # Control character inside string - escape it
-            if char == '\n':
-                result.append('\\n')
-            elif char == '\t':
-                result.append('\\t')
-            elif char == '\r':
-                result.append('\\r')
+            if char == "\n":
+                result.append("\\n")
+            elif char == "\t":
+                result.append("\\t")
+            elif char == "\r":
+                result.append("\\r")
             else:
                 # Other control characters - replace with space
-                result.append(' ')
+                result.append(" ")
         else:
             result.append(char)
 
-    return ''.join(result)
+    return "".join(result)
 
 
 def parse_tool_call(text: str) -> Optional[Dict[str, Any]]:
@@ -213,7 +249,9 @@ def parse_tool_call(text: str) -> Optional[Dict[str, Any]]:
         # Try the more robust parser
         results = parse_all_tool_calls(text)
         if results:
-            logger.info(f"parse_tool_call returning first result from parse_all_tool_calls: {results[0]['tool_call']}")
+            logger.info(
+                f"parse_tool_call returning first result from parse_all_tool_calls: {results[0]['tool_call']}"
+            )
             return results[0]["tool_call"]
         logger.debug("No tool calls found")
         return None
@@ -231,3 +269,114 @@ def parse_tool_call(text: str) -> Optional[Dict[str, Any]]:
 
     logger.debug("parse_tool_call returning None")
     return None
+
+
+def _extract_json_fuzzy(text: str, start_pos: int) -> Optional[Dict[str, Any]]:
+    """
+    Extract JSON object using fuzzy parsing that tolerates common malformations.
+    Returns None if extraction fails.
+    """
+    depth = 0
+    in_string = False
+    escape = False
+    json_end = -1
+
+    for i in range(start_pos, len(text)):
+        char = text[i]
+
+        if escape:
+            escape = False
+            continue
+        if char == "\\":
+            escape = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+
+        if not in_string:
+            if char in "{[":
+                depth += 1
+            elif char in "}])":
+                depth -= 1
+                if depth == 0:
+                    json_end = i + 1
+                    break
+
+    json_str = text[start_pos:json_end] if json_end > 0 else text[start_pos:]
+    if not json_str.strip():
+        return None
+
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError:
+        pass
+
+    fixed = _fix_json_control_chars(json_str)
+    try:
+        return json.loads(fixed)
+    except json.JSONDecodeError:
+        pass
+
+    end_pos = json_end if json_end > 0 else len(text)
+    return _extract_fields_regex(text, start_pos, end_pos)
+
+
+def _extract_fields_regex(
+    text: str, start_pos: int, end_pos: int
+) -> Optional[Dict[str, Any]]:
+    """
+    Fallback: Extract tool_use fields using regex when JSON parsing fails.
+    """
+    json_substr = text[start_pos:end_pos]
+
+    tool_type_match = re.search(r'"type"\s*:\s*"([^"]+)"', json_substr)
+    if not tool_type_match or tool_type_match.group(1) != "tool_use":
+        return None
+
+    tool_name_match = re.search(r'"name"\s*:\s*"([^"]+)"', json_substr)
+    if not tool_name_match:
+        return None
+
+    tool_id_match = re.search(r'"id"\s*:\s*"([^"]+)"', json_substr)
+    tool_id = (
+        tool_id_match.group(1) if tool_id_match else f"call_{int(time.time() * 1000)}"
+    )
+
+    tool_input = {}
+    input_match = re.search(r'"input"\s*:\s*(\{.*?\})', json_substr, re.DOTALL)
+    if input_match:
+        try:
+            tool_input = json.loads(input_match.group(1))
+        except json.JSONDecodeError:
+            tool_input = _parse_simple_object(input_match.group(1))
+
+    return {
+        "type": "tool_use",
+        "id": tool_id,
+        "name": tool_name_match.group(1),
+        "input": tool_input,
+    }
+
+
+def _parse_simple_object(obj_str: str) -> Dict[str, Any]:
+    """
+    Parse a simple JSON object using regex for key-value pairs.
+    """
+    result = {}
+    pairs = re.findall(r'"(\w+)"\s*:\s*("[^"]*"|[\d]+|true|false|null)', obj_str)
+    for key, value in pairs:
+        if value.startswith('"') and value.endswith('"'):
+            result[key] = value[1:-1]
+        elif value == "true":
+            result[key] = True
+        elif value == "false":
+            result[key] = False
+        elif value == "null":
+            result[key] = None
+        else:
+            try:
+                result[key] = int(value)
+            except ValueError:
+                pass
+    return result

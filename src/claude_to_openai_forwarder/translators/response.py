@@ -3,14 +3,27 @@ import json
 from typing import List, Dict, Any, Optional
 from claude_to_openai_forwarder.config import get_settings
 
-from claude_to_openai_forwarder.models.openai import OpenAIResponse, OpenAIChoice, OpenAIMessage
-from claude_to_openai_forwarder.models.claude import ClaudeResponse, ClaudeContentBlock, ClaudeUsage
+from claude_to_openai_forwarder.models.openai import (
+    OpenAIResponse,
+    OpenAIChoice,
+    OpenAIMessage,
+)
+from claude_to_openai_forwarder.models.claude import (
+    ClaudeResponse,
+    ClaudeContentBlock,
+    ClaudeUsage,
+)
 import logging
 import re
-from claude_to_openai_forwarder.translators.tool_prompt import tools_to_prompt ,parse_all_tool_calls,parse_tool_call
+from claude_to_openai_forwarder.translators.tool_prompt import (
+    tools_to_prompt,
+    parse_all_tool_calls,
+    parse_tool_call,
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
+
 
 class ResponseTranslator:
     """Translates OpenAI API responses to Claude format"""
@@ -20,7 +33,6 @@ class ResponseTranslator:
         """Convert OpenAI response to Claude format"""
 
         settings = get_settings()
-
 
         # Get the first choice (Claude doesn't support multiple choices)
         choice = openai_resp.choices[0]
@@ -97,7 +109,9 @@ class ResponseTranslator:
                         tool_args = json.loads(tool_args)
                         logger.info(f"Parsed tool arguments: {tool_args}")
                     except json.JSONDecodeError as e:
-                        logger.warning(f"Failed to parse tool arguments: {tool_args}, error: {e}")
+                        logger.warning(
+                            f"Failed to parse tool arguments: {tool_args}, error: {e}"
+                        )
                         tool_args = {"raw": tool_args}
 
                 tool_block = ClaudeContentBlock(
@@ -117,7 +131,6 @@ class ResponseTranslator:
 
         return content_blocks
 
-
     @classmethod
     def _parse_tool_call(cls, text: str) -> Optional[Dict[str, Any]]:
         """Extract tool call from response text"""
@@ -125,7 +138,7 @@ class ResponseTranslator:
         match = re.search(r'\{[^{}]*"type"\s*:\s*"tool_use"[^{}]*\}', text, re.DOTALL)
         if not match:
             return None
-        
+
         try:
             data = json.loads(match.group(0))
             if data.get("type") == "tool_use" and data.get("name"):
@@ -135,16 +148,15 @@ class ResponseTranslator:
                 return data
         except json.JSONDecodeError:
             pass
-        
+
         return None
-
-
-
 
     @classmethod
     def _parse_text_content(cls, content: str) -> List[ClaudeContentBlock]:
         """Parse tool calls from text content (for NVIDIA NIM)"""
-        logger.info(f"_parse_text_content called with content length: {len(content) if content else 0}")
+        logger.info(
+            f"_parse_text_content called with content length: {len(content) if content else 0}"
+        )
         if not content:
             return [ClaudeContentBlock(type="text", text="")]
 
@@ -163,20 +175,26 @@ class ResponseTranslator:
             logger.debug(f"Processing tool match: {match}")
             # Text before tool call
             if match["start"] > last_end:
-                text_before = content[last_end:match["start"]].strip()
+                text_before = content[last_end : match["start"]].strip()
                 if text_before:
                     blocks.append(ClaudeContentBlock(type="text", text=text_before))
-                    logger.debug(f"Added text block before tool: {text_before[:100]}...")
+                    logger.debug(
+                        f"Added text block before tool: {text_before[:100]}..."
+                    )
 
             # Tool call
             tool_call = match["tool_call"]
-            logger.info(f"Adding tool_use block: name={tool_call.get('name')}, id={tool_call.get('id')}")
-            blocks.append(ClaudeContentBlock(
-                type="tool_use",
-                id=tool_call["id"],
-                name=tool_call["name"],
-                input=tool_call.get("input", {})
-            ))
+            logger.info(
+                f"Adding tool_use block: name={tool_call.get('name')}, id={tool_call.get('id')}"
+            )
+            blocks.append(
+                ClaudeContentBlock(
+                    type="tool_use",
+                    id=tool_call["id"],
+                    name=tool_call["name"],
+                    input=tool_call.get("input", {}),
+                )
+            )
 
             last_end = match["end"]
 
@@ -190,54 +208,20 @@ class ResponseTranslator:
         logger.info(f"_parse_text_content returning {len(blocks)} blocks")
         return blocks if blocks else [ClaudeContentBlock(type="text", text="")]
 
-
     @classmethod
     def _parse_tool_use_from_text(cls, text: str) -> Optional[ClaudeContentBlock]:
         """Parse tool_use JSON from text content"""
         text = text.strip()
 
-        # Try to find JSON object in text
-        if text.startswith("{") and "type" in text and "tool_use" in text:
-            try:
-                data = json.loads(text)
-                if data.get("type") == "tool_use" and "name" in data:
-                    return ClaudeContentBlock(
-                        type="tool_use",
-                        id=data.get("id", f"toolu_{int(time.time() * 1000)}"),
-                        name=data.get("name", ""),
-                        input=data.get("input", {}),
-                    )
-            except json.JSONDecodeError:
-                pass
-
-        # Try to extract JSON from anywhere in text
-        try:
-            # Look for JSON-like structure
-            start = text.find("{")
-            if start != -1:
-                # Find matching closing brace
-                depth = 0
-                end = start
-                for i, char in enumerate(text[start:], start):
-                    if char == "{":
-                        depth += 1
-                    elif char == "}":
-                        depth -= 1
-                        if depth == 0:
-                            end = i + 1
-                            break
-
-                json_str = text[start:end]
-                data = json.loads(json_str)
-                if data.get("type") == "tool_use" and "name" in data:
-                    return ClaudeContentBlock(
-                        type="tool_use",
-                        id=data.get("id", f"toolu_{int(time.time() * 1000)}"),
-                        name=data.get("name", ""),
-                        input=data.get("input", {}),
-                    )
-        except (json.JSONDecodeError, ValueError):
-            pass
+        # Search for tool_use JSON anywhere in text
+        tool_call = cls._parse_tool_call(text)
+        if tool_call:
+            return ClaudeContentBlock(
+                type="tool_use",
+                id=tool_call.get("id", f"toolu_{int(time.time() * 1000)}"),
+                name=tool_call.get("name", ""),
+                input=tool_call.get("input", {}),
+            )
 
         return None
 

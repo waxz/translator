@@ -4,6 +4,8 @@ from claude_to_openai_forwarder.config import get_settings
 from claude_to_openai_forwarder.models.openai import OpenAIRequest, OpenAIResponse
 from claude_to_openai_forwarder.backends.base import BaseBackend
 from claude_to_openai_forwarder.translators.request import RequestTranslator
+from claude_to_openai_forwarder.translators.content_process import flatten_content
+
 import logging
 import json
 import uuid
@@ -66,9 +68,13 @@ class LiteLLMBackend(BaseBackend):
         litellm_model = self._get_litellm_model(request.model)
         provider = self._get_provider(request.model)
 
+        messages = [msg.model_dump(exclude_none=True) for msg in request.messages]
+        if self.settings.force_content_flat:
+            for m in messages:
+                m["content"] = flatten_content(m.get("content"))
         litellm_request = {
             "model": litellm_model,
-            "messages": [msg.model_dump(exclude_none=True) for msg in request.messages],
+            "messages": messages,
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
             "stream": request.stream,

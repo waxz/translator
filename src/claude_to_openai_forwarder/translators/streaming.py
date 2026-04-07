@@ -34,8 +34,6 @@ class StreamingTranslator:
         settings = get_settings()
         force_tool_in_prompt = settings.force_tool_in_prompt
 
-
-
         message_id = f"msg_{int(time.time() * 1000)}"
         content_blocks: List[Dict[str, Any]] = []
         current_block_index = -1
@@ -98,58 +96,9 @@ class StreamingTranslator:
                             buffered_text += content
                             buffered_text_segments.append(content)
 
-                            # For NIM mode: accumulate and try to parse JSON incrementally
-                            # Similar to the pattern: buffer += content; try: json.loads(buffer)
-                            if force_tool_in_prompt:
-                                # Check if we have a complete JSON object that can be parsed
-                                complete_blocks = cls._extract_complete_tool_calls(buffered_text)
-                                if complete_blocks:
-                                    for block in complete_blocks:
-                                        if block["type"] == "text":
-                                            # Emit text prefix
-                                            current_block_index = len(content_blocks)
-                                            content_blocks.append(block)
-                                            yield cls._format_sse("content_block_start", {
-                                                "type": "content_block_start",
-                                                "index": current_block_index,
-                                                "content_block": {"type": "text", "text": ""}
-                                            })
-                                            yield cls._format_sse("content_block_delta", {
-                                                "type": "content_block_delta",
-                                                "index": current_block_index,
-                                                "delta": {"type": "text_delta", "text": block["text"]}
-                                            })
-                                            yield cls._format_sse("content_block_stop", {
-                                                "type": "content_block_stop", "index": current_block_index
-                                            })
-                                        elif block["type"] == "tool_use":
-                                            # Emit tool_use block
-                                            current_block_index = len(content_blocks)
-                                            content_blocks.append(block)
-                                            yield cls._format_sse("content_block_start", {
-                                                "type": "content_block_start",
-                                                "index": current_block_index,
-                                                "content_block": {
-                                                    "type": "tool_use",
-                                                    "id": block["id"],
-                                                    "name": block["name"]
-                                                }
-                                            })
-                                            yield cls._format_sse("content_block_delta", {
-                                                "type": "content_block_delta",
-                                                "index": current_block_index,
-                                                "delta": {
-                                                    "type": "input_json_delta",
-                                                    "partial_json": json.dumps(block.get("input", {}))
-                                                }
-                                            })
-                                            yield cls._format_sse("content_block_stop", {
-                                                "type": "content_block_stop", "index": current_block_index
-                                            })
-                                    # Remove processed content from buffer
-                                    last_end = complete_blocks[-1].get("end_pos", 0)
-                                    buffered_text = buffered_text[last_end:]
-                                    buffered_text_segments = []
+                            # Note: We don't try to parse tool calls incrementally during streaming
+                            # because the JSON is incomplete until the stream finishes.
+                            # Tool extraction happens in _flush_buffered_text when stream ends.
 
                         # Handle native tool calls (OpenAI format)
                         if "tool_calls" in delta and delta["tool_calls"]:
@@ -183,9 +132,9 @@ class StreamingTranslator:
 
                                     current_block_index = len(content_blocks)
 
-                                    tool_name = tool_call_delta.get(
-                                        "function", {}
-                                    ).get("name", "")
+                                    tool_name = tool_call_delta.get("function", {}).get(
+                                        "name", ""
+                                    )
                                     if tool_name:
                                         tool_calls_buffer[tc_index]["function"][
                                             "name"
@@ -202,9 +151,7 @@ class StreamingTranslator:
                                             "index": current_block_index,
                                             "content_block": {
                                                 "type": "tool_use",
-                                                "id": tool_calls_buffer[tc_index][
-                                                    "id"
-                                                ],
+                                                "id": tool_calls_buffer[tc_index]["id"],
                                                 "name": tool_name,
                                             },
                                         },
@@ -218,21 +165,23 @@ class StreamingTranslator:
                                             "input": {},
                                         }
                                     )
-                                    tool_calls_buffer[tc_index]["content_block_index"] = current_block_index
+                                    tool_calls_buffer[tc_index][
+                                        "content_block_index"
+                                    ] = current_block_index
 
                                 # Update tool call
                                 if "function" in tool_call_delta:
                                     func = tool_call_delta["function"]
-                                    content_block_index = tool_calls_buffer[
-                                        tc_index
-                                    ]["content_block_index"]
+                                    content_block_index = tool_calls_buffer[tc_index][
+                                        "content_block_index"
+                                    ]
                                     if "name" in func:
                                         tool_calls_buffer[tc_index]["function"][
                                             "name"
                                         ] = func["name"]
-                                        content_blocks[content_block_index][
-                                            "name"
-                                        ] = func["name"]
+                                        content_blocks[content_block_index]["name"] = (
+                                            func["name"]
+                                        )
 
                                     if "arguments" in func:
                                         tool_calls_buffer[tc_index]["function"][
@@ -246,9 +195,7 @@ class StreamingTranslator:
                                                 "index": content_block_index,
                                                 "delta": {
                                                     "type": "input_json_delta",
-                                                    "partial_json": func[
-                                                        "arguments"
-                                                    ],
+                                                    "partial_json": func["arguments"],
                                                 },
                                             },
                                         )
@@ -262,9 +209,13 @@ class StreamingTranslator:
                             # This is ONLY done for NIM provider (force_tool_in_prompt=True)
                             # OpenAI native format sends tool calls separately
                             if buffered_text and old_finish_reason is None:
-                                logger.info(f"Stream finishing with finish_reason={finish_reason}, buffered_text length: {len(buffered_text)}, force_tool_in_prompt={force_tool_in_prompt}")
+                                logger.info(
+                                    f"Stream finishing with finish_reason={finish_reason}, buffered_text length: {len(buffered_text)}, force_tool_in_prompt={force_tool_in_prompt}"
+                                )
                                 if force_tool_in_prompt:
-                                    logger.debug(f"Buffered text preview: {repr(buffered_text[:300])}")
+                                    logger.debug(
+                                        f"Buffered text preview: {repr(buffered_text[:300])}"
+                                    )
                                     (
                                         buffered_events,
                                         current_block_index,
@@ -281,7 +232,9 @@ class StreamingTranslator:
                                         yield event
                                 else:
                                     # For OpenAI native, just emit text without tool extraction
-                                    logger.debug(f"OpenAI native mode: flushing text without tool extraction")
+                                    logger.debug(
+                                        f"OpenAI native mode: flushing text without tool extraction"
+                                    )
                                     (
                                         buffered_events,
                                         current_block_index,
@@ -403,7 +356,7 @@ class StreamingTranslator:
         if content_blocks:
             has_tool_use = False
             for block in content_blocks:
-                if hasattr(block, 'type') and block.type == "tool_use":
+                if hasattr(block, "type") and block.type == "tool_use":
                     has_tool_use = True
                     break
                 elif isinstance(block, dict) and block.get("type") == "tool_use":
@@ -411,7 +364,7 @@ class StreamingTranslator:
                     break
             if has_tool_use:
                 return "tool_use"
-        
+
         mapping = {
             "stop": "end_turn",
             "length": "max_tokens",
@@ -465,7 +418,7 @@ class StreamingTranslator:
                 data_fragments.append(line)
                 continue
 
-            if saw_data and line[:1] in {'{', '}', '[', ']', '"', ',', ' '}:
+            if saw_data and line[:1] in {"{", "}", "[", "]", '"', ",", " "}:
                 data_fragments.append(line)
 
         if not data_fragments:
@@ -483,7 +436,9 @@ class StreamingTranslator:
         force_tool_in_prompt: bool = False,
     ) -> Tuple[List[str], int, str, List[str]]:
         """Flush buffered text, extracting any embedded tool calls."""
-        logger.info(f"_flush_buffered_text called with text length: {len(buffered_text)}, force_tool_in_prompt={force_tool_in_prompt}")
+        logger.info(
+            f"_flush_buffered_text called with text length: {len(buffered_text)}, force_tool_in_prompt={force_tool_in_prompt}"
+        )
         if not buffered_text:
             return [], current_block_index, buffered_text, buffered_text_segments
 
@@ -505,31 +460,36 @@ class StreamingTranslator:
             )
             events.append(
                 cls._format_sse(
-                "content_block_start",
-                {
-                    "type": "content_block_start",
-                    "index": current_block_index,
-                    "content_block": {"type": "text", "text": ""},
-                },
-            ))
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": current_block_index,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                )
+            )
             for segment in yield_text_segments:
                 events.append(
                     cls._format_sse(
-                    "content_block_delta",
-                    {
-                        "type": "content_block_delta",
-                        "index": current_block_index,
-                        "delta": {"type": "text_delta", "text": segment},
-                    },
-                ))
+                        "content_block_delta",
+                        {
+                            "type": "content_block_delta",
+                            "index": current_block_index,
+                            "delta": {"type": "text_delta", "text": segment},
+                        },
+                    )
+                )
             events.append(
                 cls._format_sse(
-                "content_block_stop",
-                {"type": "content_block_stop", "index": current_block_index},
-            ))
+                    "content_block_stop",
+                    {"type": "content_block_stop", "index": current_block_index},
+                )
+            )
 
         if parsed_tool_use:
-            logger.info(f"Emitting tool_use block: {parsed_tool_use.name} with id {parsed_tool_use.id}")
+            logger.info(
+                f"Emitting tool_use block: {parsed_tool_use.name} with id {parsed_tool_use.id}"
+            )
             current_block_index = len(content_blocks)
             content_blocks.append(
                 {
@@ -541,35 +501,40 @@ class StreamingTranslator:
             )
             events.append(
                 cls._format_sse(
-                "content_block_start",
-                {
-                    "type": "content_block_start",
-                    "index": current_block_index,
-                    "content_block": {
-                        "type": "tool_use",
-                        "id": parsed_tool_use.id,
-                        "name": parsed_tool_use.name,
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": current_block_index,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": parsed_tool_use.id,
+                            "name": parsed_tool_use.name,
+                        },
                     },
-                },
-            ))
+                )
+            )
             events.append(
                 cls._format_sse(
-                "content_block_delta",
-                {
-                    "type": "content_block_delta",
-                    "index": current_block_index,
-                    "delta": {
-                        "type": "input_json_delta",
-                        "partial_json": json.dumps(parsed_tool_use.input or {}),
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": current_block_index,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": json.dumps(parsed_tool_use.input or {}),
+                        },
                     },
-                },
-            ))
+                )
+            )
             events.append(
                 cls._format_sse(
-                "content_block_stop",
-                {"type": "content_block_stop", "index": current_block_index},
-            ))
-            logger.info("Emitted tool_use content_block events for: %s", parsed_tool_use.name)
+                    "content_block_stop",
+                    {"type": "content_block_stop", "index": current_block_index},
+                )
+            )
+            logger.info(
+                "Emitted tool_use content_block events for: %s", parsed_tool_use.name
+            )
 
         return events, current_block_index, "", []
 
@@ -582,21 +547,25 @@ class StreamingTranslator:
         logger.info(f"_split_embedded_tool_use found {len(tool_matches)} tool matches")
 
         if not tool_matches:
-            logger.info(f"No tool calls found in text. Text preview: {repr(text[:200])}")
+            logger.info(
+                f"No tool calls found in text. Text preview: {repr(text[:200])}"
+            )
             return text, None
 
         # Get first tool call
         first_match = tool_matches[0]
         tool_call = first_match["tool_call"]
-        prefix = text[:first_match["start"]].rstrip()
+        prefix = text[: first_match["start"]].rstrip()
         logger.debug(f"Prefix text: {prefix[:100]}...")
-        logger.info(f"Found tool_use: {tool_call.get('name')} with id {tool_call.get('id')}")
+        logger.info(
+            f"Found tool_use: {tool_call.get('name')} with id {tool_call.get('id')}"
+        )
 
         parsed = ClaudeContentBlock(
             type="tool_use",
             id=tool_call["id"],
             name=tool_call["name"],
-            input=tool_call.get("input", {})
+            input=tool_call.get("input", {}),
         )
 
         return prefix, parsed
@@ -609,9 +578,13 @@ class StreamingTranslator:
 
         Returns list of parsed blocks with 'type', 'end_pos' keys.
         """
-        from claude_to_openai_forwarder.translators.tool_prompt import parse_all_tool_calls
+        from claude_to_openai_forwarder.translators.tool_prompt import (
+            parse_all_tool_calls,
+        )
 
-        logger.debug(f"_extract_complete_tool_calls called with text length: {len(text)}")
+        logger.debug(
+            f"_extract_complete_tool_calls called with text length: {len(text)}"
+        )
 
         blocks = []
         last_end = 0
@@ -631,19 +604,19 @@ class StreamingTranslator:
                 if start_pos > last_end:
                     text_before = text[last_end:start_pos].rstrip()
                     if text_before:
-                        blocks.append({
-                            "type": "text",
-                            "text": text_before,
-                            "end_pos": start_pos
-                        })
+                        blocks.append(
+                            {"type": "text", "text": text_before, "end_pos": start_pos}
+                        )
 
-                blocks.append({
-                    "type": "tool_use",
-                    "id": tool_call.get("id", f"toolu_{int(time.time() * 1000)}"),
-                    "name": tool_call["name"],
-                    "input": tool_call.get("input", {}),
-                    "end_pos": end_pos
-                })
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": tool_call.get("id", f"toolu_{int(time.time() * 1000)}"),
+                        "name": tool_call["name"],
+                        "input": tool_call.get("input", {}),
+                        "end_pos": end_pos,
+                    }
+                )
 
                 last_end = end_pos
 

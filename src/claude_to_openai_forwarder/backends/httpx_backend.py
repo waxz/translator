@@ -4,6 +4,7 @@ from claude_to_openai_forwarder.config import get_settings
 from claude_to_openai_forwarder.models.openai import OpenAIRequest, OpenAIResponse
 from claude_to_openai_forwarder.backends.base import BaseBackend
 from claude_to_openai_forwarder.utils.exceptions import OpenAIAPIError
+from claude_to_openai_forwarder.translators.content_process import flatten_content
 import logging
 import json
 
@@ -27,7 +28,14 @@ class HttpxBackend(BaseBackend):
 
         logger.info(f"Sending to OpenAI API via httpx:")
         logger.info(f"  Model: {request_json.get('model')}")
-        logger.info(f"  Messages: {len(request_json.get('messages', []))}")
+        logger.info(f"  Messages Length: {len(request_json.get('messages', []))}")
+        messages = request_json.get('messages', [])
+        if self.settings.force_content_flat:
+            for m in messages:
+                m["content"] = flatten_content(m.get("content"))
+
+        for m in messages:
+            logger.info(f" - Messages: {m}")
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(

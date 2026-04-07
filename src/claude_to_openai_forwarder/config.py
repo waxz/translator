@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     # Backend Configuration
     backend_type: str = "httpx"  # "httpx" or "litellm"
 
+    rate_limit_rpm: int = 40
+
     # API Configuration
     openai_api_key: str
     openai_api_key_list: str | None = None
@@ -35,9 +37,19 @@ class Settings(BaseSettings):
 
     # Tool handling
     force_tool_in_prompt: bool = False
+    force_content_flat: bool = False
 
 
-SETTINGS : Settings = Settings()
-@lru_cache()
+_settings_cache: Settings | None = None
+
+
 def get_settings() -> Settings:
-    return SETTINGS
+    global _settings_cache
+    if _settings_cache is None:
+        _settings_cache = Settings()
+    return _settings_cache
+
+
+def reset_settings() -> None:
+    global _settings_cache
+    _settings_cache = None
