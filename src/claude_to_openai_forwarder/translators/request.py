@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Union
 from claude_to_openai_forwarder.config import get_settings
 from claude_to_openai_forwarder.models.claude import ClaudeMessage, ClaudeRequest
 from claude_to_openai_forwarder.models.openai import OpenAIMessage, OpenAIRequest
-from claude_to_openai_forwarder.translators.tool_prompt import tools_to_prompt ,parse_tool_call
+from claude_to_openai_forwarder.translators.tool_prompt import tools_to_prompt
 logger = logging.getLogger(__name__)
 
 
@@ -17,8 +17,7 @@ class RequestTranslator:
     def translate(
         cls, claude_req: ClaudeRequest, default_model: Optional[str] = None
     ) -> OpenAIRequest:
-        logger.info("RequestTranslator: Starting translation")
-        
+                
         settings = get_settings()
         if default_model is None:
             default_model = settings.default_openai_model
@@ -35,14 +34,9 @@ class RequestTranslator:
 
         model = settings.claude_model_map.get(claude_req.model, default_model)
 
-        logger.info(
+        logger.debug(
             "Translating Claude model %s to upstream model %s", claude_req.model, model
         )
-        openai_messages = []
-        for m in messages:
-            s = json.dumps(m.model_dump(exclude_none=True))
-            logger.info(f"-> {s[:100]}")
-
 
         return OpenAIRequest(
             model=model,

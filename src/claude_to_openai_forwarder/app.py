@@ -16,6 +16,7 @@ import logging
 import traceback
 import json
 import time
+import uuid
 from typing import AsyncGenerator
 
 from claude_to_openai_forwarder.config import get_settings
@@ -63,6 +64,14 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 80)
     yield
     logger.info("Shutting down...")
+    # Clean up backend resources
+    try:
+        backend = get_backend()
+        if hasattr(backend, 'close'):
+            await backend.close()
+            logger.info("Closed backend resources")
+    except Exception as e:
+        logger.warning(f"Error closing backend: {e}")
 
 
 app = FastAPI(
@@ -162,7 +171,7 @@ async def global_exception_handler(request: FastAPIRequest, exc: Exception):
             "type": "error",
             "error": {
                 "type": "internal_error",
-                "message": f"Internal server error: {str(exc)}",
+                "message": f"Internal server error: {type(exc).__name__}: {str(exc)}",
             },
         },
     )
@@ -194,11 +203,11 @@ async def create_message(
     Accepts Claude-formatted requests and returns Claude-formatted responses.
     """
     request_start = time.time()
-    request_id = f"req_{int(time.time() * 1000)}"
+    request_id = f"req_{uuid.uuid4().hex[:12]}"
 
     try:
         settings = get_settings()
-        # check_rate_limit(api_key, SETTINGS.rate_limit_rpm)
+        check_rate_limit(api_key, settings.rate_limit_rpm)
         client = get_backend()
 
         logger.info("\n" + "=" * 80)
@@ -250,10 +259,6 @@ async def create_message(
         logger.info(f"[{request_id}] Translating to OpenAI format...")
         openai_request = RequestTranslator.translate(request)
 
-        # Log translated request
-        openai_dict = openai_request.model_dump(exclude_none=True)
-        # log_request_details(openai_dict, "OPENAI REQUEST")
-
         # Handle streaming
         if request.stream:
             logger.info(f"[{request_id}] Starting streaming response")
@@ -266,7 +271,7 @@ async def create_message(
                         openai_stream
                     ):
                         event_count += 1
-                        if event_count % 10 == 0:
+                        if event_count % 100 == 0:
                             logger.debug(
                                 f"[{request_id}] Streamed {event_count} events"
                             )
@@ -307,7 +312,7 @@ async def create_message(
 
         # Serialize response
         serialized = claude_response.model_dump(exclude_none=True)
-
+        
         # Final validation - check for tool_use blocks
         content_blocks = serialized.get("content", [])
         has_tool_use = any(b.get("type") == "tool_use" for b in content_blocks)
@@ -328,7 +333,7 @@ async def create_message(
         logger.info(f"[{request_id}] Request completed in {request_duration:.2f}s")
         logger.info("=" * 80 + "\n")
 
-        return JSONResponse(content=serialized, headers={"X-Request-ID": request_id})
+        return claude_response
 
     except HTTPException:
         raise

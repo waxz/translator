@@ -1,219 +1,206 @@
-# FastAPI Claude-to-OpenAI Forwarder 🚀
+# Claude-to-OpenAI Forwarder
 
-An open-source HTTP forwarder that translates Claude Messages API requests to OpenAI-compatible chat completion backends. Run any model—from NVIDIA NIM, Ollama, or OpenAI—as a drop-in replacement for Claude.
+A FastAPI service that accepts Claude Messages API requests and forwards them to OpenAI-compatible chat completions backends.
+
+It is designed as a drop-in bridge for tools such as Claude Code when the upstream model is served by OpenAI, NVIDIA NIM, Ollama, or another OpenAI-compatible endpoint.
+
+## Design
+
+The project is organized around a small translation pipeline:
+
+- `app.py`: FastAPI entrypoint and Claude-compatible HTTP surface
+- `translators/request.py`: Claude request -> OpenAI chat completions request
+- `backends/`: upstream transport layer
+- `translators/response.py`: OpenAI response -> Claude message response
+- `translators/streaming.py`: OpenAI SSE stream -> Claude SSE stream
+- `translators/tool_prompt.py`: tool-call parsing and prompt-embedded tool helpers
+
+The proxy supports two backend modes:
+
+- `httpx`
+  Best when the upstream already exposes a stable OpenAI-compatible `/chat/completions` API.
+
+- `litellm`
+  Best when provider-specific routing or LiteLLM normalization is needed.
 
 ## Features
 
-- ✅ Drop-in replacement for Claude Messages API
-- ✅ Tool calling support (Claude Code compatible)
-- ✅ Streaming with Server-Sent Events (SSE)
-- ✅ Multiple backends: OpenAI, NVIDIA NIM, Ollama, LiteLLM
-- ✅ Token counting endpoint
-- ✅ Flexible backend modes: `httpx` and `litellm`
+- Claude Messages API compatible `/v1/messages`
+- Claude-compatible streaming responses over SSE
+- Non-streaming and streaming tool-call translation
+- Support for native OpenAI `tool_calls`
+- Support for prompt-embedded tool calling for providers that return tool calls inside text
+- Configurable model mapping from Claude model names to upstream model names
+- Optional inbound API-key enforcement for Claude clients
+- Local per-key rate limiting
+- Persistent `httpx` connection pooling with configurable timeouts
+- Claude-compatible error responses
+- `/v1/messages/count_tokens` endpoint
 
-## Quick Start
+## Tool-Calling Behavior
 
-### Installation
+The proxy handles several tool-call shapes that appear in practice:
 
-```bash
-uv pip install -r requirements.txt
-cp .env.example .env
-```
+- native OpenAI `tool_calls`
+- embedded JSON such as `{"type":"tool_use", ...}`
+- function-style calls such as `Agent({...})`
 
-### Running the Server
+The response sanitization layer also strips control/meta wrappers that should not leak into user-visible assistant text, including:
 
-### Installation Troubleshooting
-
-* Issue: uv pip install fails
-  Solution: Check your network connection and try again.
-* Issue: Missing dependencies
-  Solution: Run `uv pip install -r requirements.txt` to ensure all dependencies are installed.
-
-```bash
-uvicorn src.claude_to_openai_forwarder.app:app --port 8000
-```
-
-Or as a standalone command:
-
-```bash
-claude_to_openai_forwarder --port 8000
-```
+- `<thinking>...</thinking>`
+- `<result ...>...</result>`
+- `<analysis>...</analysis>`
+- `<commentary>...</commentary>`
+- `<final>...</final>`
 
 ## Configuration
 
-### Environment Variables
+Configuration is loaded from environment variables or `.env`.
 
-The following environment variables can be set in a `.env` file:
+Core settings:
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `BACKEND_TYPE` | `httpx` or `litellm` | `httpx` |
+| `OPENAI_API_KEY` | Upstream API key | required |
+| `OPENAI_BASE_URL` | Upstream OpenAI-compatible base URL | `https://api.openai.com/v1` |
+| `MODEL_PROVIDER` | LiteLLM provider hint | unset |
+| `CLAUDE_API_KEY` | Inbound client auth key | unset |
+| `DEFAULT_OPENAI_MODEL` | Default upstream model | `gpt-4o-mini` |
+| `CLAUDE_MODEL_MAP` | Claude-to-upstream model map | `{}` |
+| `FORCE_TOOL_IN_PROMPT` | Use prompt-embedded tool calling | `false` |
+| `FORCE_CONTENT_FLAT` | Flatten message content for upstream compatibility | `false` |
+| `RATE_LIMIT_RPM` | Local requests per minute per inbound key | `40` |
+| `HOST` | Bind host | `0.0.0.0` |
+| `PORT` | Bind port | `8000` |
+| `LOG_LEVEL` | Server log level | `INFO` |
+
+HTTP client settings:
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `REQUEST_TIMEOUT` | Total request timeout | `120.0` |
+| `CONNECT_TIMEOUT` | Connect timeout | `10.0` |
+| `READ_TIMEOUT` | Read timeout | `120.0` |
+| `WRITE_TIMEOUT` | Write timeout | `30.0` |
+| `MAX_CONNECTIONS` | Max pooled connections | `100` |
+| `MAX_KEEPALIVE_CONNECTIONS` | Max keepalive connections | `20` |
+| `KEEPALIVE_EXPIRY` | Keepalive expiry seconds | `30.0` |
+
+Example `.env`:
 
 ```env
 BACKEND_TYPE=httpx
-CLAUDE_API_KEY=REDACTED
+CLAUDE_API_KEY=sk-ant-local-forwarder-key
+OPENAI_API_KEY=your-upstream-key
+OPENAI_BASE_URL=https://integrate.api.nvidia.com/v1
+MODEL_PROVIDER=nvidia_nim
+DEFAULT_OPENAI_MODEL=meta/llama-4-maverick-17b-128e-instruct
+FORCE_TOOL_IN_PROMPT=true
 RATE_LIMIT_RPM=40
 HOST=0.0.0.0
 PORT=8000
 LOG_LEVEL=INFO
-OPENAI_API_KEY=REDACTED
-OPENAI_API_KEY_LIST=REDACTED;REDACTED
-OPENAI_BASE_URL=https://integrate.api.nvidia.com/v1
-MODEL_PROVIDER=nvidia_nim
-DEFAULT_OPENAI_MODEL=meta/llama-4-maverick-17b-128e-instruct
-CLAUDE_MODEL_MAP={...}
-FORCE_TOOL_IN_PROMPT=true
-FORCE_CONTENT_FLAT=true
 ```
 
-##
+## Running
 
-Set these environment variables (or use `.env`):
+Install:
 
-| Variable | Description | Default |
-|----------|-------------|--------|
-| `BACKEND_TYPE` | `httpx` or `litellm` | `httpx` |
-| `OPENAI_API_KEY` | Your API key for the backend | Required |
-| `OPENAI_BASE_URL` | Backend API URL | `https://api.openai.com/v1` |
-| `MODEL_PROVIDER` | LiteLLM provider name | Optional |
-| `DEFAULT_OPENAI_MODEL` | Default model to use | `gpt-4o-mini` |
-| `CLAUDE_API_KEY` | Auth key for inbound clients | Optional |
-| `FORCE_TOOL_IN_PROMPT` | Embed tools in prompt text | `false` |
-| `HOST` | Host to bind | `0.0.0.0` |
-| `PORT` | Port to bind | `8000` |
-
-## Backend Modes
-
-## Advanced Configuration Examples
-
-* Example 1: Configuring multiple backend providers
-* Example 2: Customizing model settings for specific use cases
-
-
-
-### `httpx` Mode
-
-Best for providers with a standard OpenAI-compatible API.
-
-```env
-BACKEND_TYPE=httpx
-OPENAI_BASE_URL=https://api.openai.com/v1
-DEFAULT_OPENAI_MODEL=gpt-4o-mini
-FORCE_TOOL_IN_PROMPT=false
+```bash
+uv pip install -r requirements.txt
 ```
 
-### `litellm` Mode
+Run with Uvicorn:
 
-Best for provider-specific routing, model normalization, or when you need LiteLLM's compatibility layer.
-
-```env
-BACKEND_TYPE=litellm
-OPENAI_BASE_URL=https://integrate.api.nvidia.com/v1
-MODEL_PROVIDER=nvidia_nim
-DEFAULT_OPENAI_MODEL=meta/llama-4-maverick-17b-128e-instruct
-FORCE_TOOL_IN_PROMPT=true
+```bash
+uvicorn src.claude_to_openai_forwarder.app:app --host 0.0.0.0 --port 8000
 ```
 
-## Usage Examples
+Or run the packaged entrypoint:
 
-## Troubleshooting
+```bash
+claude-to-openai-forwarder
+```
 
-### Common Error Messages
+## Usage
 
-* Error 404: Model not found. Check the MODEL_PROVIDER and DEFAULT_OPENAI_MODEL environment variables.
-* Error 401: Authentication failed. Verify the OPENAI_API_KEY and CLAUDE_API_KEY environment variables.
-
-### Send a Message
+Send a Claude-style request:
 
 ```bash
 curl http://127.0.0.1:8000/v1/messages \
   -H "Content-Type: application/json" \
-  -H "x-api-key: sk-local" \
+  -H "x-api-key: sk-ant-local-forwarder-key" \
   -d '{
     "model": "claude-3-5-sonnet-20241022",
-    "max_tokens": 1024,
+    "max_tokens": 256,
     "messages": [
-      {"role": "user", "content": "Hello!"}
+      {"role": "user", "content": "Hello"}
     ]
   }'
 ```
 
-### Count Tokens
+Count tokens:
 
 ```bash
 curl http://127.0.0.1:8000/v1/messages/count_tokens \
   -H "Content-Type: application/json" \
-  -H "x-api-key: sk-local" \
+  -H "x-api-key: sk-ant-local-forwarder-key" \
   -d '{
     "model": "claude-3-5-sonnet-20241022",
-    "max_tokens": 1024,
+    "max_tokens": 256,
     "messages": [
-      {"role": "user", "content": "Hello!"}
+      {"role": "user", "content": "Hello"}
     ]
   }'
 ```
 
-### List Available Models (NVIDIA NIM)
+## Claude Code Integration
 
-```bash
-curl https://integrate.api.nvidia.com/v1/models \
-  -H "Authorization: Bearer nvapi-<your_api_key>" | jq -r "."
-```
-working models:
-- meta/llama-4-maverick-17b-128e-instruct ok
-- meta/llama-4-scout-17b-16e-instruct Not Found
-- deepseek-ai/deepseek-r1 end of life
-- meta/llama-3.3-70b-instruct ok
-- qwen/qwen2.5-coder-32b-instruct ContextWindow too small
-
-## API Documentation
-
-The API endpoints are documented in the [OpenAPI specification](src/claude_to_openai_forwarder/app.py).
-
-## Integration with Claude Code
-
-To use this forwarder with the Claude Code CLI, add these settings to `~/.claude/settings.json`:
+Example Claude Code environment settings:
 
 ```json
 {
   "env": {
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:8000",
-    "ANTHROPIC_API_KEY": "sk-local",
+    "ANTHROPIC_API_KEY": "sk-ant-local-forwarder-key",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-3-5-sonnet-20241022"
   }
 }
 ```
 
+## Recent Improvements
+
+The current code in `src/` includes the following hardening and compatibility fixes:
+
+- local rate limiting is enabled in the request path
+- rate-limit cleanup preserves active identifiers while pruning expired timestamps
+- `httpx` backend error parsing handles nested errors, flat objects, and JSON string payloads
+- streaming translation no longer leaks recognized tool-call text into normal assistant text
+- parser support for function-style tool calls such as `Agent({...})`
+- control/meta wrappers such as `<thinking>` and `<result ...>` are stripped from visible assistant text
+- persistent `httpx` client pooling with configurable timeout and connection settings
+
 ## Verification
 
-## Release Notes
-
-* v1.0: Initial release with support for OpenAI and NVIDIA NIM backends
-* v1.1: Added support for LiteLLM backend and improved error handling
-
-
+Basic syntax check:
 
 ```bash
-uv run python -m compileall app
-uv run python -m unittest tests.test_backends
+python -m compileall src/claude_to_openai_forwarder
 ```
 
-## Future Plans
+Focused regression tests:
 
-We plan to add support for more backend providers and improve error handling in future releases.
+```bash
+PYTHONPATH=src python -m unittest tests.test_backends.HttpxBackendTests
+PYTHONPATH=src python -m unittest tests.test_backends.AppRateLimitTests.test_messages_endpoint_enforces_local_rate_limit
+PYTHONPATH=src python -m unittest tests.test_backends.StreamingTranslatorTests.test_translate_stream_converts_function_style_agent_call_after_text
+PYTHONPATH=src python -m unittest tests.test_backends.StreamingTranslatorTests.test_translate_stream_strips_thinking_wrappers_from_text
+PYTHONPATH=src python -m unittest tests.test_improvements.TestRateLimiterMemoryLeakFix
+```
 
-## FAQs
+## Notes
 
-* Q: How do I configure the backend provider?
-A: See the Configuration section for details.
-* Q: What models are supported?
-A: Check the MODEL_PROVIDER documentation for supported models.
-
-## Support
-
-For support, please open an issue on our [GitHub repository](https://github.com/anthropics/claude-code/issues) or contact us at <support@anthropic.com>.
-
-## Code Style Guidelines
-
-We follow standard Python PEP 8 guidelines for code style. For more details, see [PEP 8](https://peps.python.org/pep-0008/).
-
-## License
-
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
-
+- `MODEL_PROVIDER` is mainly relevant for the `litellm` backend.
+- For providers such as NVIDIA NIM, `FORCE_TOOL_IN_PROMPT=true` may be required depending on model behavior.
+- The inbound `CLAUDE_API_KEY` is optional, but it should be set in any non-local deployment.

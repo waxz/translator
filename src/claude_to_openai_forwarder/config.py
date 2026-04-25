@@ -1,9 +1,7 @@
-# config.py
-
 from functools import lru_cache
 from typing import Dict
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,21 +33,31 @@ class Settings(BaseSettings):
     default_openai_model: str = "gpt-4o-mini"
     claude_model_map: Dict[str, str] = Field(default_factory=dict)
 
+    @field_validator('claude_model_map')
+    def validate_model_map(cls, v):
+        if not isinstance(v, dict):
+            raise ValueError('claude_model_map must be a dictionary')
+        return v or {}
+
     # Tool handling
     force_tool_in_prompt: bool = False
     force_content_flat: bool = False
 
+    # Timeout Configuration (in seconds)
+    request_timeout: float = 120.0  # Total timeout for entire request
+    connect_timeout: float = 10.0  # Timeout for connection establishment
+    read_timeout: float = 120.0  # Timeout for reading response body
+    write_timeout: float = 30.0  # Timeout for writing request body
 
-_settings_cache: Settings | None = None
+    # Connection Pool Configuration
+    max_connections: int = 100
+    max_keepalive_connections: int = 20
+    keepalive_expiry: float = 30.0
 
-
+@lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    global _settings_cache
-    if _settings_cache is None:
-        _settings_cache = Settings()
-    return _settings_cache
+    return Settings()
 
 
 def reset_settings() -> None:
-    global _settings_cache
-    _settings_cache = None
+    get_settings.cache_clear()

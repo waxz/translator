@@ -1,7 +1,9 @@
 from fastapi import Header, HTTPException, status
 from typing import Optional
-
+import re
+import logging
 from claude_to_openai_forwarder.config import get_settings
+logger = logging.getLogger(__name__)
 
 def rotate_by_key_string(current_key, api_list_str):
     """
@@ -49,9 +51,9 @@ async def verify_claude_api_key(x_api_key: Optional[str] = Header(None)):
         return "test-key"
 
     # Basic format validation
-    if not x_api_key.startswith("sk-ant-"):
+    if not re.match(r'^sk-ant-[a-zA-Z0-9_-]{20,}$', x_api_key):
         # Allow test keys
-        if x_api_key.startswith("sk-"):
+        if re.match(r"^sk-[a-zA-Z0-9_-]{20,}$", x_api_key):
             return x_api_key
 
         raise HTTPException(

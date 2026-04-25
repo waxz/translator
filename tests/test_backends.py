@@ -11,6 +11,7 @@ from claude_to_openai_forwarder.models.claude import ClaudeRequest
 from claude_to_openai_forwarder.models.openai import OpenAIRequest
 from claude_to_openai_forwarder.translators.request import RequestTranslator
 from claude_to_openai_forwarder.translators.streaming import StreamingTranslator
+from claude_to_openai_forwarder.utils.rate_limit import visit_records
 from claude_to_openai_forwarder.utils.exceptions import OpenAIAPIError
 from fastapi import HTTPException
 
@@ -142,11 +143,71 @@ class AuthMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "test-key")
 
 
+class AppRateLimitTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        visit_records.clear()
+
+    def tearDown(self):
+        visit_records.clear()
+
+    async def test_messages_endpoint_enforces_local_rate_limit(self):
+        settings = SimpleNamespace(
+            rate_limit_rpm=1,
+            claude_api_key="sk-ant-secret",
+        )
+
+        request_payload = {
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 16,
+            "stream": False,
+        }
+
+        class FakeRequest:
+            def __init__(self, payload):
+                self._body = json.dumps(payload).encode("utf-8")
+
+            async def body(self):
+                return self._body
+
+        with patch("claude_to_openai_forwarder.app.get_settings", return_value=settings), patch(
+            "claude_to_openai_forwarder.app.get_backend"
+        ) as mock_get_backend, patch(
+            "claude_to_openai_forwarder.app.RequestTranslator.translate",
+            return_value=MagicMock(),
+        ), patch(
+            "claude_to_openai_forwarder.app.ResponseTranslator.translate",
+            return_value=MagicMock(),
+        ):
+            backend = MagicMock()
+            backend.get_backend_name.return_value = "httpx"
+            backend.create_completion = AsyncMock(return_value=MagicMock())
+            mock_get_backend.return_value = backend
+
+            from claude_to_openai_forwarder.app import create_message
+
+            await create_message(FakeRequest(request_payload), api_key="sk-ant-secret")
+
+            with self.assertRaises(HTTPException) as ctx:
+                await create_message(FakeRequest(request_payload), api_key="sk-ant-secret")
+
+        self.assertEqual(ctx.exception.status_code, 429)
+        backend.create_completion.assert_awaited_once()
+
+
 class HttpxBackendTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         settings = SimpleNamespace(
             openai_base_url="https://api.example.com/v1",
             openai_api_key="test-key",
+            force_content_flat=False,
+            request_timeout=120.0,
+            connect_timeout=10.0,
+            read_timeout=120.0,
+            write_timeout=30.0,
+            max_connections=100,
+            max_keepalive_connections=20,
+            keepalive_expiry=30.0,
         )
         settings_patcher = patch("claude_to_openai_forwarder.backends.httpx_backend.get_settings", return_value=settings)
         self.addCleanup(settings_patcher.stop)
@@ -176,7 +237,7 @@ class HttpxBackendTests(unittest.IsolatedAsyncioTestCase):
 
         with patch(
             "claude_to_openai_forwarder.backends.httpx_backend.httpx.AsyncClient",
-            side_effect=lambda timeout: FakeAsyncClient(
+            side_effect=lambda **kwargs: FakeAsyncClient(
                 post_response=response,
                 post_spy=post_spy,
             ),
@@ -196,7 +257,7 @@ class HttpxBackendTests(unittest.IsolatedAsyncioTestCase):
 
         with patch(
             "claude_to_openai_forwarder.backends.httpx_backend.httpx.AsyncClient",
-            side_effect=lambda timeout: FakeAsyncClient(post_response=response),
+            side_effect=lambda **kwargs: FakeAsyncClient(post_response=response),
         ):
             with self.assertRaises(OpenAIAPIError) as ctx:
                 await self.backend.create_completion(make_request())
@@ -204,13 +265,29 @@ class HttpxBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.status_code, 429)
         self.assertEqual(ctx.exception.message, "rate limited")
 
+    async def test_create_completion_uses_title_when_error_payload_is_flat_object(self):
+        response = FakeHTTPXResponse(
+            status_code=429,
+            json_data={"status": 429, "title": "Too Many Requests"},
+        )
+
+        with patch(
+            "claude_to_openai_forwarder.backends.httpx_backend.httpx.AsyncClient",
+            side_effect=lambda **kwargs: FakeAsyncClient(post_response=response),
+        ):
+            with self.assertRaises(OpenAIAPIError) as ctx:
+                await self.backend.create_completion(make_request())
+
+        self.assertEqual(ctx.exception.status_code, 429)
+        self.assertEqual(ctx.exception.message, "Too Many Requests")
+
     async def test_create_completion_stream_yields_upstream_chunks(self):
         chunks = [b"data: first\n\n", b"data: second\n\n"]
         stream_response = FakeHTTPXStreamResponse(status_code=200, chunks=chunks)
 
         with patch(
             "claude_to_openai_forwarder.backends.httpx_backend.httpx.AsyncClient",
-            side_effect=lambda timeout: FakeAsyncClient(stream_response=stream_response),
+            side_effect=lambda **kwargs: FakeAsyncClient(stream_response=stream_response),
         ):
             result = [
                 chunk
@@ -227,7 +304,7 @@ class HttpxBackendTests(unittest.IsolatedAsyncioTestCase):
 
         with patch(
             "claude_to_openai_forwarder.backends.httpx_backend.httpx.AsyncClient",
-            side_effect=lambda timeout: FakeAsyncClient(stream_response=stream_response),
+            side_effect=lambda **kwargs: FakeAsyncClient(stream_response=stream_response),
         ):
             with self.assertRaises(OpenAIAPIError) as ctx:
                 result = [
@@ -240,6 +317,48 @@ class HttpxBackendTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertEqual(ctx.exception.message, "bad request")
+
+    async def test_create_completion_stream_handles_string_error_payload(self):
+        stream_response = FakeHTTPXStreamResponse(
+            status_code=429,
+            error_body=b'"Too Many Requests"',
+        )
+
+        with patch(
+            "claude_to_openai_forwarder.backends.httpx_backend.httpx.AsyncClient",
+            side_effect=lambda **kwargs: FakeAsyncClient(stream_response=stream_response),
+        ):
+            with self.assertRaises(OpenAIAPIError) as ctx:
+                _ = [
+                    chunk
+                    async for chunk in self.backend.create_completion_stream(
+                        make_request(stream=True)
+                    )
+                ]
+
+        self.assertEqual(ctx.exception.status_code, 429)
+        self.assertEqual(ctx.exception.message, "Too Many Requests")
+
+    async def test_create_completion_stream_uses_title_when_error_payload_is_flat_object(self):
+        stream_response = FakeHTTPXStreamResponse(
+            status_code=429,
+            error_body=b'{"status":429,"title":"Too Many Requests"}',
+        )
+
+        with patch(
+            "claude_to_openai_forwarder.backends.httpx_backend.httpx.AsyncClient",
+            side_effect=lambda **kwargs: FakeAsyncClient(stream_response=stream_response),
+        ):
+            with self.assertRaises(OpenAIAPIError) as ctx:
+                _ = [
+                    chunk
+                    async for chunk in self.backend.create_completion_stream(
+                        make_request(stream=True)
+                    )
+                ]
+
+        self.assertEqual(ctx.exception.status_code, 429)
+        self.assertEqual(ctx.exception.message, "Too Many Requests")
 
 
 class LiteLLMBackendTests(unittest.IsolatedAsyncioTestCase):
@@ -456,7 +575,14 @@ class StreamingTranslatorTests(unittest.IsolatedAsyncioTestCase):
             )
             yield b"data: [DONE]\n\n"
 
-        events = [event async for event in StreamingTranslator.translate_stream(openai_stream())]
+        with patch(
+            "claude_to_openai_forwarder.translators.streaming.get_settings",
+            return_value=SimpleNamespace(
+                force_tool_in_prompt=True,
+                default_openai_model="meta/llama-4-maverick-17b-128e-instruct",
+            ),
+        ):
+            events = [event async for event in StreamingTranslator.translate_stream(openai_stream())]
         joined = "".join(events)
 
         self.assertIn('"type": "tool_use"', joined)
@@ -475,7 +601,14 @@ class StreamingTranslatorTests(unittest.IsolatedAsyncioTestCase):
             )
             yield b"data: [DONE]\n\n"
 
-        events = [event async for event in StreamingTranslator.translate_stream(openai_stream())]
+        with patch(
+            "claude_to_openai_forwarder.translators.streaming.get_settings",
+            return_value=SimpleNamespace(
+                force_tool_in_prompt=True,
+                default_openai_model="meta/llama-4-maverick-17b-128e-instruct",
+            ),
+        ):
+            events = [event async for event in StreamingTranslator.translate_stream(openai_stream())]
         joined = "".join(events)
 
         self.assertIn('"type": "text_delta"', joined)
@@ -496,7 +629,14 @@ class StreamingTranslatorTests(unittest.IsolatedAsyncioTestCase):
             )
             yield b"data: [DONE]\n\n"
 
-        events = [event async for event in StreamingTranslator.translate_stream(openai_stream())]
+        with patch(
+            "claude_to_openai_forwarder.translators.streaming.get_settings",
+            return_value=SimpleNamespace(
+                force_tool_in_prompt=True,
+                default_openai_model="meta/llama-4-maverick-17b-128e-instruct",
+            ),
+        ):
+            events = [event async for event in StreamingTranslator.translate_stream(openai_stream())]
         joined = "".join(events)
 
         self.assertIn('"type": "tool_use"', joined)
@@ -518,7 +658,14 @@ class StreamingTranslatorTests(unittest.IsolatedAsyncioTestCase):
             )
             yield b"data: [DONE]\n\n"
 
-        events = [event async for event in StreamingTranslator.translate_stream(openai_stream())]
+        with patch(
+            "claude_to_openai_forwarder.translators.streaming.get_settings",
+            return_value=SimpleNamespace(
+                force_tool_in_prompt=True,
+                default_openai_model="meta/llama-4-maverick-17b-128e-instruct",
+            ),
+        ):
+            events = [event async for event in StreamingTranslator.translate_stream(openai_stream())]
         joined = "".join(events)
 
         self.assertIn('"type": "tool_use"', joined)
@@ -526,6 +673,87 @@ class StreamingTranslatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('\\"recursive\\": true', joined)
         self.assertIn('\\"limit\\": 5', joined)
         self.assertIn('"stop_reason": "tool_use"', joined)
+
+    async def test_translate_stream_converts_function_style_agent_call_after_text(self):
+        async def openai_stream():
+            yield (
+                b'data: {"choices":[{"delta":{"content":"I will start a review task. "},'
+                b'"finish_reason":null}]}\n\n'
+            )
+            yield (
+                b'data: {"choices":[{"delta":{"content":"Agent({description: \\"Security review\\", '
+                b'subagent_type: \\"Explore\\", run_in_background: true})"},'
+                b'"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":4}}\n\n'
+            )
+            yield b"data: [DONE]\n\n"
+
+        with patch(
+            "claude_to_openai_forwarder.translators.streaming.get_settings",
+            return_value=SimpleNamespace(
+                force_tool_in_prompt=True,
+                default_openai_model="meta/llama-4-maverick-17b-128e-instruct",
+            ),
+        ):
+            events = [event async for event in StreamingTranslator.translate_stream(openai_stream())]
+        joined = "".join(events)
+
+        self.assertIn('"type": "tool_use"', joined)
+        self.assertIn('"name": "Agent"', joined)
+        self.assertIn('\\"description\\": \\"Security review\\"', joined)
+        self.assertNotIn('Agent({description', joined)
+        self.assertIn('"stop_reason": "tool_use"', joined)
+
+    async def test_translate_stream_strips_result_content_wrappers_from_text(self):
+        async def openai_stream():
+            yield (
+                b'data: {"choices":[{"delta":{"content":"Waiting for the agent.\\n\\n"},'
+                b'"finish_reason":null}]}\n\n'
+            )
+            yield (
+                b'data: {"choices":[{"delta":{"content":"<result content>Task completed with '
+                b'result: found issue</result>\\nNow continuing."},"finish_reason":"stop"}],'
+                b'"usage":{"prompt_tokens":9,"completion_tokens":4}}\n\n'
+            )
+            yield b"data: [DONE]\n\n"
+
+        with patch(
+            "claude_to_openai_forwarder.translators.streaming.get_settings",
+            return_value=SimpleNamespace(
+                force_tool_in_prompt=True,
+                default_openai_model="meta/llama-4-maverick-17b-128e-instruct",
+            ),
+        ):
+            events = [event async for event in StreamingTranslator.translate_stream(openai_stream())]
+        joined = "".join(events)
+
+        self.assertIn("Task completed with result: found issue", joined)
+        self.assertNotIn("<result content>", joined)
+        self.assertNotIn("</result>", joined)
+
+    async def test_translate_stream_strips_thinking_wrappers_from_text(self):
+        async def openai_stream():
+            yield (
+                b'data: {"choices":[{"delta":{"content":"Before. "},"finish_reason":null}]}\n\n'
+            )
+            yield (
+                b'data: {"choices":[{"delta":{"content":"<thinking>internal reasoning</thinking> After."},"finish_reason":"stop"}],'
+                b'"usage":{"prompt_tokens":9,"completion_tokens":4}}\n\n'
+            )
+            yield b"data: [DONE]\n\n"
+
+        with patch(
+            "claude_to_openai_forwarder.translators.streaming.get_settings",
+            return_value=SimpleNamespace(
+                force_tool_in_prompt=True,
+                default_openai_model="meta/llama-4-maverick-17b-128e-instruct",
+            ),
+        ):
+            events = [event async for event in StreamingTranslator.translate_stream(openai_stream())]
+        joined = "".join(events)
+
+        self.assertIn("internal reasoning", joined)
+        self.assertNotIn("<thinking>", joined)
+        self.assertNotIn("</thinking>", joined)
 
     async def test_translate_stream_handles_sse_json_split_across_chunks(self):
         async def openai_stream():

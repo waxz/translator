@@ -10,6 +10,8 @@ from claude_to_openai_forwarder.translators.tool_prompt import (
     _extract_fields_regex,
     _parse_simple_object,
     _fix_json_control_chars,
+    parse_all_tool_calls,
+    strip_control_text_tags,
 )
 
 
@@ -140,6 +142,22 @@ class TestFixJsonControlChars(unittest.TestCase):
         self.assertEqual(result["name"], "Test")
 
 
+class TestStripControlTextTags(unittest.TestCase):
+    def test_strips_result_content_wrappers(self):
+        text = "Before\n<result content trimmed for brevity>hello</result>\nAfter"
+        result = strip_control_text_tags(text)
+        self.assertNotIn("<result content", result)
+        self.assertNotIn("</result>", result)
+        self.assertIn("hello", result)
+
+    def test_strips_thinking_wrappers(self):
+        text = "Before<thinking>internal reasoning</thinking>After"
+        result = strip_control_text_tags(text)
+        self.assertNotIn("<thinking>", result)
+        self.assertNotIn("</thinking>", result)
+        self.assertIn("internal reasoning", result)
+
+
 class TestIntegration(unittest.TestCase):
     """Integration tests for the fuzzy extraction pipeline"""
 
@@ -171,6 +189,16 @@ class TestIntegration(unittest.TestCase):
             result = _extract_json_fuzzy(text, match.start())
             if result:
                 self.assertEqual(result["type"], "tool_use")
+
+    def test_function_style_agent_call_with_json_like_object(self):
+        text = """Certainly! I'll proceed.\n\nAgent({description: "Security review", subagent_type: "Explore", prompt: "Check auth", run_in_background: true})"""
+
+        result = parse_all_tool_calls(text)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["tool_call"]["name"], "Agent")
+        self.assertEqual(result[0]["tool_call"]["input"]["description"], "Security review")
+        self.assertEqual(result[0]["tool_call"]["input"]["subagent_type"], "Explore")
+        self.assertEqual(result[0]["tool_call"]["input"]["run_in_background"], True)
 
 
 class TestEdgeCases(unittest.TestCase):
@@ -330,6 +358,20 @@ class TestParseSimpleObjectEdgeCases(unittest.TestCase):
         obj_str = '{"text": "a \\" b"}'
         result = _parse_simple_object(obj_str)
         # May not handle escaped quotes, but shouldn't crash
+
+    def test_brace_imbalance(self):
+        """Test with text containing tool_use JSON after other content"""
+        obj_str = """
+No files were found containing the pattern "preview_patch.*error" in the codebase.
+
+Since I couldn't find any specific configurations or error messages related to `preview_patch`, I'll use the `AskUserQuestion` tool again to ask the user if they have any additional information about the issue or if they can provide more context.
+
+{"type": "tool_use", "id": "ask_user_again", "name": "AskUserQuestion", "input": {"questions": [{"question": "Can you provide more context or details about the issue with preview_patch?", "header": "Additional context", "options": [{"label": "Claude Code configuration issue", "description": "There might be a configuration issue with Claude Code"}, {"label": "MCP tool implementation issue", "description": "There might be an issue with the MCP tool implementation"}, {"label": "Other", "description": "Other reasons or additional context"}], "multiSelect": false}]}
+"""
+        result = parse_all_tool_calls(obj_str)
+        # Should find 1 tool call
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["tool_call"]["name"], "AskUserQuestion")
 
 
 class TestFixControlCharsEdgeCases(unittest.TestCase):

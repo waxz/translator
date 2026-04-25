@@ -15,28 +15,16 @@ class ClaudeContentBlock(BaseModel):
         # Exclude None values when serializing
         exclude_none = True
 
-class ClaudeContentBlock1(BaseModel):
-    """Content block for messages or system prompts"""
-    type: str
-    text: Optional[str] = None
-    cache_control: Optional[Dict[str, Any]] = None
-    # For tool use
-    id: Optional[str] = None
-    name: Optional[str] = None
-    input: Optional[Dict[str, Any]] = None
-
 
 class ClaudeMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: Union[str, List[Dict[str, Any]]]
 
 
-# app/models/claude.py
-
 class ClaudeRequest(BaseModel):
     model: str
-    messages: List[ClaudeMessage]
-    max_tokens: int
+    messages:  Optional[List[ClaudeMessage]] = None
+    max_tokens: Optional[int] = None
     temperature: Optional[float] = 1.0
     top_p: Optional[float] = None
     top_k: Optional[int] = None
@@ -71,16 +59,6 @@ class ClaudeResponse(BaseModel):
     
     class Config:
         exclude_none = True
-
-class ClaudeResponse1(BaseModel):
-    id: str
-    type: Literal["message"] = "message"
-    role: Literal["assistant"] = "assistant"
-    content: List[ClaudeContentBlock]
-    model: str
-    stop_reason: Optional[str] = None
-    stop_sequence: Optional[str] = None
-    usage: ClaudeUsage
 
 
 class ClaudeStreamEvent(BaseModel):

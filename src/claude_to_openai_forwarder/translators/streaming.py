@@ -4,7 +4,10 @@ import time
 from typing import AsyncIterator, Optional, Dict, Any, List, Tuple
 from claude_to_openai_forwarder.models.claude import ClaudeStreamEvent, ClaudeUsage
 from claude_to_openai_forwarder.translators.response import ResponseTranslator
-from claude_to_openai_forwarder.translators.tool_prompt import parse_all_tool_calls
+from claude_to_openai_forwarder.translators.tool_prompt import (
+    parse_all_tool_calls,
+    strip_control_text_tags,
+)
 from claude_to_openai_forwarder.models.claude import ClaudeContentBlock
 from claude_to_openai_forwarder.config import get_settings
 
@@ -56,7 +59,7 @@ class StreamingTranslator:
                     "type": "message",
                     "role": "assistant",
                     "content": [],
-                    "model": "claude-3-5-sonnet-20241022",
+                    "model": settings.default_openai_model,
                     "usage": {"input_tokens": 0, "output_tokens": 0},
                 },
             },
@@ -90,7 +93,6 @@ class StreamingTranslator:
                         choice = data["choices"][0]
                         delta = choice.get("delta", {})
 
-                        # Handle text content delta
                         if "content" in delta and delta["content"]:
                             content = delta["content"]
                             buffered_text += content
@@ -107,7 +109,7 @@ class StreamingTranslator:
                                 current_block_index,
                                 buffered_text,
                                 buffered_text_segments,
-                            ) = cls._flush_buffered_text(
+                            ) = cls._handle_buffered_text(
                                 content_blocks=content_blocks,
                                 current_block_index=current_block_index,
                                 buffered_text=buffered_text,
@@ -140,7 +142,7 @@ class StreamingTranslator:
                                             "name"
                                         ] = tool_name
 
-                                    logger.info(
+                                    logger.debug(
                                         f"Starting tool_use block: index={current_block_index}, name={tool_name}"
                                     )
 
@@ -209,55 +211,33 @@ class StreamingTranslator:
                             # This is ONLY done for NIM provider (force_tool_in_prompt=True)
                             # OpenAI native format sends tool calls separately
                             if buffered_text and old_finish_reason is None:
-                                logger.info(
-                                    f"Stream finishing with finish_reason={finish_reason}, buffered_text length: {len(buffered_text)}, force_tool_in_prompt={force_tool_in_prompt}"
+                                logger.debug(
+                                    f"Stream finishing: finish_reason={finish_reason}, buffered_text_len={len(buffered_text)}, force_tool_in_prompt={force_tool_in_prompt}"
                                 )
-                                if force_tool_in_prompt:
-                                    logger.debug(
-                                        f"Buffered text preview: {repr(buffered_text[:300])}"
-                                    )
-                                    (
-                                        buffered_events,
-                                        current_block_index,
-                                        buffered_text,
-                                        buffered_text_segments,
-                                    ) = cls._flush_buffered_text(
-                                        content_blocks=content_blocks,
-                                        current_block_index=current_block_index,
-                                        buffered_text=buffered_text,
-                                        buffered_text_segments=buffered_text_segments,
-                                        force_tool_in_prompt=True,
-                                    )
-                                    for event in buffered_events:
-                                        yield event
-                                else:
-                                    # For OpenAI native, just emit text without tool extraction
-                                    logger.debug(
-                                        f"OpenAI native mode: flushing text without tool extraction"
-                                    )
-                                    (
-                                        buffered_events,
-                                        current_block_index,
-                                        buffered_text,
-                                        buffered_text_segments,
-                                    ) = cls._flush_buffered_text(
-                                        content_blocks=content_blocks,
-                                        current_block_index=current_block_index,
-                                        buffered_text=buffered_text,
-                                        buffered_text_segments=buffered_text_segments,
-                                        force_tool_in_prompt=False,
-                                    )
-                                    for event in buffered_events:
-                                        yield event
 
-                    # Get usage if available
-                    if "usage" in data:
-                        usage = data["usage"]
-                        total_input_tokens = usage.get("prompt_tokens", 0)
-                        total_output_tokens = usage.get("completion_tokens", 0)
+                                (
+                                    buffered_events,
+                                    current_block_index,
+                                    buffered_text,
+                                    buffered_text_segments,
+                                ) = cls._handle_buffered_text(
+                                    content_blocks=content_blocks,
+                                    current_block_index=current_block_index,
+                                    buffered_text=buffered_text,
+                                    buffered_text_segments=buffered_text_segments,
+                                    force_tool_in_prompt=force_tool_in_prompt,
+                                )
+                                for event in buffered_events:
+                                    yield event
+
+                        # Get usage if available
+                        if "usage" in data:
+                            usage = data["usage"]
+                            total_input_tokens = usage.get("prompt_tokens", 0)
+                            total_output_tokens = usage.get("completion_tokens", 0)
 
                 except json.JSONDecodeError as e:
-                    logger.warning(f"Failed to parse SSE data: {e}")
+                    logger.warning(f"Failed to parse SSE data: {e}. Data preview: {data_str[:200]}")
                     continue
 
         # Process any trailing buffer content
@@ -288,7 +268,7 @@ class StreamingTranslator:
                 current_block_index,
                 buffered_text,
                 buffered_text_segments,
-            ) = cls._flush_buffered_text(
+            ) = cls._handle_buffered_text(
                 content_blocks=content_blocks,
                 current_block_index=current_block_index,
                 buffered_text=buffered_text,
@@ -329,7 +309,7 @@ class StreamingTranslator:
         # Map finish reason
         stop_reason = cls._map_stop_reason(finish_reason, content_blocks)
 
-        logger.info(
+        logger.debug(
             f"Stream complete: finish_reason={finish_reason}, stop_reason={stop_reason}, "
             f"blocks={len(content_blocks)}, tool_calls={len(tool_calls_buffer)}"
         )
@@ -400,7 +380,7 @@ class StreamingTranslator:
         saw_data = False
 
         for raw_line in raw_event.splitlines():
-            line = raw_line.rstrip("\r")
+            line = raw_line.rstrip('\r')
             if line.startswith("data: "):
                 data_fragments.append(line[6:])
                 saw_data = True
@@ -427,7 +407,7 @@ class StreamingTranslator:
         return "".join(data_fragments)
 
     @classmethod
-    def _flush_buffered_text(
+    def _handle_buffered_text(
         cls,
         content_blocks: List[Dict[str, Any]],
         current_block_index: int,
@@ -435,10 +415,7 @@ class StreamingTranslator:
         buffered_text_segments: List[str],
         force_tool_in_prompt: bool = False,
     ) -> Tuple[List[str], int, str, List[str]]:
-        """Flush buffered text, extracting any embedded tool calls."""
-        logger.info(
-            f"_flush_buffered_text called with text length: {len(buffered_text)}, force_tool_in_prompt={force_tool_in_prompt}"
-        )
+        """Handle buffered text, extracting any embedded tool calls."""
         if not buffered_text:
             return [], current_block_index, buffered_text, buffered_text_segments
 
@@ -447,17 +424,20 @@ class StreamingTranslator:
         else:
             prefix_text = buffered_text
             parsed_tool_use = None
+        prefix_text = strip_control_text_tags(prefix_text)
         events: List[str] = []
 
         if prefix_text:
-            logger.info(f"Flushing prefix text: {len(prefix_text)} chars")
             current_block_index = len(content_blocks)
             content_blocks.append({"type": "text", "text": prefix_text})
-            yield_text_segments = (
-                buffered_text_segments
-                if parsed_tool_use is None and buffered_text_segments
-                else [prefix_text]
-            )
+            if parsed_tool_use:
+                text_segments = [prefix_text]
+            else:
+                sanitized_text = strip_control_text_tags(buffered_text)
+                if sanitized_text != buffered_text:
+                    text_segments = [sanitized_text]
+                else:
+                    text_segments = buffered_text_segments
             events.append(
                 cls._format_sse(
                     "content_block_start",
@@ -468,7 +448,7 @@ class StreamingTranslator:
                     },
                 )
             )
-            for segment in yield_text_segments:
+            for segment in text_segments:
                 events.append(
                     cls._format_sse(
                         "content_block_delta",
@@ -487,9 +467,6 @@ class StreamingTranslator:
             )
 
         if parsed_tool_use:
-            logger.info(
-                f"Emitting tool_use block: {parsed_tool_use.name} with id {parsed_tool_use.id}"
-            )
             current_block_index = len(content_blocks)
             content_blocks.append(
                 {
@@ -532,34 +509,22 @@ class StreamingTranslator:
                     {"type": "content_block_stop", "index": current_block_index},
                 )
             )
-            logger.info(
-                "Emitted tool_use content_block events for: %s", parsed_tool_use.name
-            )
 
         return events, current_block_index, "", []
 
     @classmethod
     def _split_embedded_tool_use(cls, text: str):
-        """Extract tool calls from accumulated text using parse_all_tool_calls."""
-        logger.info(f"_split_embedded_tool_use called with text length: {len(text)}")
-        logger.debug(f"Text content: {repr(text[:500])}...")
-        tool_matches = parse_all_tool_calls(text)
-        logger.info(f"_split_embedded_tool_use found {len(tool_matches)} tool matches")
+        from claude_to_openai_forwarder.translators.tool_prompt import (
+            parse_all_tool_calls,
+        )
 
+        tool_matches = parse_all_tool_calls(text)
         if not tool_matches:
-            logger.info(
-                f"No tool calls found in text. Text preview: {repr(text[:200])}"
-            )
             return text, None
 
-        # Get first tool call
         first_match = tool_matches[0]
         tool_call = first_match["tool_call"]
         prefix = text[: first_match["start"]].rstrip()
-        logger.debug(f"Prefix text: {prefix[:100]}...")
-        logger.info(
-            f"Found tool_use: {tool_call.get('name')} with id {tool_call.get('id')}"
-        )
 
         parsed = ClaudeContentBlock(
             type="tool_use",
@@ -572,27 +537,13 @@ class StreamingTranslator:
 
     @classmethod
     def _extract_complete_tool_calls(cls, text: str) -> List[Dict[str, Any]]:
-        """
-        Extract any complete tool calls from accumulated text.
-        Similar to the pattern: buffer += content; try json.loads(buffer)
-
-        Returns list of parsed blocks with 'type', 'end_pos' keys.
-        """
         from claude_to_openai_forwarder.translators.tool_prompt import (
             parse_all_tool_calls,
-        )
-
-        logger.debug(
-            f"_extract_complete_tool_calls called with text length: {len(text)}"
         )
 
         blocks = []
         last_end = 0
 
-        # Find all potential JSON objects in text
-        # Look for patterns like {"type": "tool_use"...} or <tool_call>...
-
-        # First try standard format
         tool_matches = parse_all_tool_calls(text)
         if tool_matches:
             for match in tool_matches:
@@ -600,7 +551,6 @@ class StreamingTranslator:
                 end_pos = match["end"]
                 tool_call = match["tool_call"]
 
-                # Text before this tool call
                 if start_pos > last_end:
                     text_before = text[last_end:start_pos].rstrip()
                     if text_before:

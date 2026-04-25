@@ -15,14 +15,15 @@ from claude_to_openai_forwarder.models.claude import (
 )
 import logging
 import re
+from json_repair import repair_json
 from claude_to_openai_forwarder.translators.tool_prompt import (
     tools_to_prompt,
     parse_all_tool_calls,
     parse_tool_call,
+    strip_control_text_tags,
 )
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
 
 class ResponseTranslator:
@@ -73,6 +74,11 @@ class ResponseTranslator:
         # Handle text content first
         if message.content:
             content_text = message.content
+        tool_use_block = cls._parse_tool_use_from_text(content_text)
+        if tool_use_block:
+            content_blocks.append(tool_use_block)
+        else:
+            content_blocks.append(ClaudeContentBlock(type="text", text=content_text))
             if isinstance(content_text, list):
                 # Extract text from content array
                 text_parts = []
@@ -95,7 +101,7 @@ class ResponseTranslator:
 
         # Handle tool calls - FIXED: Access as dictionary
         if message.tool_calls:
-            logger.info(f"Converting {len(message.tool_calls)} tool calls")
+            logger.debug(f"Converting {len(message.tool_calls)} tool calls")
             for tool_call in message.tool_calls:
                 # tool_call is a Dict[str, Any]
                 tool_id = tool_call.get("id", f"toolu_{int(time.time() * 1000)}")
@@ -107,12 +113,13 @@ class ResponseTranslator:
                 if isinstance(tool_args, str):
                     try:
                         tool_args = json.loads(tool_args)
-                        logger.info(f"Parsed tool arguments: {tool_args}")
+                        logger.debug(f"Parsed tool arguments for {tool_name}")
                     except json.JSONDecodeError as e:
-                        logger.warning(
-                            f"Failed to parse tool arguments: {tool_args}, error: {e}"
+                        logger.error(
+                            f"Failed to parse tool arguments for '{tool_name}': {e}. Raw: {tool_args[:100]}"
                         )
-                        tool_args = {"raw": tool_args}
+                        # Return empty dict instead of wrapping - upstream should handle invalid schema
+                        tool_args = {}
 
                 tool_block = ClaudeContentBlock(
                     type="tool_use",
@@ -121,8 +128,8 @@ class ResponseTranslator:
                     input=tool_args,
                 )
                 content_blocks.append(tool_block)
-                logger.info(
-                    f"Added tool_use block: {tool_block.name} with id {tool_block.id}, input keys: {list(tool_args.keys()) if isinstance(tool_args, dict) else 'not a dict'}"
+                logger.debug(
+                    f"Added tool_use: {tool_block.name} (id: {tool_block.id[:8]}...)"
                 )
 
         # Default to empty text if no content
@@ -133,36 +140,57 @@ class ResponseTranslator:
 
     @classmethod
     def _parse_tool_call(cls, text: str) -> Optional[Dict[str, Any]]:
-        """Extract tool call from response text"""
-        # Find JSON object with type: tool_use
-        match = re.search(r'\{[^{}]*"type"\s*:\s*"tool_use"[^{}]*\}', text, re.DOTALL)
-        if not match:
-            return None
-
-        try:
-            data = json.loads(match.group(0))
-            if data.get("type") == "tool_use" and data.get("name"):
-                # Add ID if missing
-                if "id" not in data:
-                    data["id"] = f"call_{int(time.time() * 1000)}"
-                return data
-        except json.JSONDecodeError:
-            pass
-
+        """
+        Extract tool call JSON from response text.
+        Handles nested JSON structures properly.
+        """
+        # Find all potential JSON objects with type: tool_use
+        for match in re.finditer(r'\{', text):
+            start = match.start()
+            # Try to extract balanced JSON from this position
+            try:
+                bracket_count = 0
+                end = start
+                for i in range(start, len(text)):
+                    if text[i] == '{':
+                        bracket_count += 1
+                    elif text[i] == '}':
+                        bracket_count -= 1
+                    if bracket_count == 0:
+                        end = i + 1
+                        break
+                
+                if bracket_count != 0:
+                    continue  # Unbalanced brackets
+                
+                potential_json = text[start:end]
+                data = json.loads(potential_json)
+                
+                # Check if this is a valid tool_use block
+                if data.get("type") == "tool_use" and data.get("name"):
+                    if "id" not in data:
+                        data["id"] = f"call_{int(time.time() * 1000)}"
+                    logger.debug(f"Extracted tool_use from text: {data.get('name')}")
+                    return data
+            except (json.JSONDecodeError, ValueError):
+                continue  # Try next JSON object
+        
         return None
 
     @classmethod
     def _parse_text_content(cls, content: str) -> List[ClaudeContentBlock]:
         """Parse tool calls from text content (for NVIDIA NIM)"""
-        logger.info(
-            f"_parse_text_content called with content length: {len(content) if content else 0}"
+        logger.debug(
+            f"_parse_text_content: content length = {len(content) if content else 0}"
         )
         if not content:
             return [ClaudeContentBlock(type="text", text="")]
 
+        content = strip_control_text_tags(content)
+
         # Extract all tool calls with positions
         tool_matches = parse_all_tool_calls(content)
-        logger.info(f"_parse_text_content found {len(tool_matches)} tool matches")
+        logger.debug(f"Found {len(tool_matches) if tool_matches else 0} tool calls in text")
 
         if not tool_matches:
             logger.debug("No tool calls found, returning text content")
@@ -172,20 +200,16 @@ class ResponseTranslator:
         last_end = 0
 
         for match in tool_matches:
-            logger.debug(f"Processing tool match: {match}")
             # Text before tool call
             if match["start"] > last_end:
                 text_before = content[last_end : match["start"]].strip()
                 if text_before:
                     blocks.append(ClaudeContentBlock(type="text", text=text_before))
-                    logger.debug(
-                        f"Added text block before tool: {text_before[:100]}..."
-                    )
 
             # Tool call
             tool_call = match["tool_call"]
-            logger.info(
-                f"Adding tool_use block: name={tool_call.get('name')}, id={tool_call.get('id')}"
+            logger.debug(
+                f"Processing tool: {tool_call.get('name')}"
             )
             blocks.append(
                 ClaudeContentBlock(
@@ -203,15 +227,13 @@ class ResponseTranslator:
             text_after = content[last_end:].strip()
             if text_after:
                 blocks.append(ClaudeContentBlock(type="text", text=text_after))
-                logger.debug(f"Added text block after last tool: {text_after[:100]}...")
 
-        logger.info(f"_parse_text_content returning {len(blocks)} blocks")
         return blocks if blocks else [ClaudeContentBlock(type="text", text="")]
 
     @classmethod
     def _parse_tool_use_from_text(cls, text: str) -> Optional[ClaudeContentBlock]:
         """Parse tool_use JSON from text content"""
-        text = text.strip()
+        text = strip_control_text_tags(text).strip()
 
         # Search for tool_use JSON anywhere in text
         tool_call = cls._parse_tool_call(text)
