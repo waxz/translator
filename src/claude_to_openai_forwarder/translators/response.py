@@ -71,33 +71,13 @@ class ResponseTranslator:
         """Convert OpenAI message to Claude content blocks"""
         content_blocks = []
 
-        # Handle text content first
-        if message.content:
-            content_text = message.content
-        tool_use_block = cls._parse_tool_use_from_text(content_text)
-        if tool_use_block:
-            content_blocks.append(tool_use_block)
-        else:
-            content_blocks.append(ClaudeContentBlock(type="text", text=content_text))
-            if isinstance(content_text, list):
-                # Extract text from content array
-                text_parts = []
-                for item in content_text:
-                    if isinstance(item, dict) and item.get("type") == "text":
-                        text_parts.append(item.get("text", ""))
-                    elif isinstance(item, str):
-                        text_parts.append(item)
-                content_text = "\n".join(text_parts)
-
-            if content_text and isinstance(content_text, str):
-                # Check if content looks like a JSON tool_use
-                tool_use_block = cls._parse_tool_use_from_text(content_text)
-                if tool_use_block:
-                    content_blocks.append(tool_use_block)
-                else:
-                    content_blocks.append(
-                        ClaudeContentBlock(type="text", text=content_text)
-                    )
+        content_text = cls._extract_text_content(message.content)
+        if content_text:
+            prefix_text, embedded_tool_use = cls._split_embedded_tool_use(content_text)
+            if prefix_text:
+                content_blocks.append(ClaudeContentBlock(type="text", text=prefix_text))
+            if embedded_tool_use:
+                content_blocks.append(embedded_tool_use)
 
         # Handle tool calls - FIXED: Access as dictionary
         if message.tool_calls:
@@ -137,6 +117,53 @@ class ResponseTranslator:
             content_blocks.append(ClaudeContentBlock(type="text", text=""))
 
         return content_blocks
+
+    @staticmethod
+    def _extract_text_content(content: Optional[Any]) -> str:
+        """Normalize OpenAI message content into a plain text string."""
+        if content is None:
+            return ""
+
+        if isinstance(content, str):
+            return content
+
+        if isinstance(content, list):
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text_parts.append(item.get("text", ""))
+                elif isinstance(item, str):
+                    text_parts.append(item)
+            return "\n".join(part for part in text_parts if part)
+
+        return str(content)
+
+    @classmethod
+    def _split_embedded_tool_use(
+        cls, text: str
+    ) -> tuple[str, Optional[ClaudeContentBlock]]:
+        """Split leading text from an embedded tool_use block when present."""
+        if not text:
+            return "", None
+
+        sanitized = strip_control_text_tags(text)
+        tool_matches = parse_all_tool_calls(sanitized)
+        if not tool_matches:
+            return sanitized, None
+
+        first_match = tool_matches[0]
+        tool_call = first_match["tool_call"]
+        prefix = sanitized[: first_match["start"]].strip()
+
+        return (
+            prefix,
+            ClaudeContentBlock(
+                type="tool_use",
+                id=tool_call.get("id", f"toolu_{int(time.time() * 1000)}"),
+                name=tool_call.get("name", ""),
+                input=tool_call.get("input", {}),
+            ),
+        )
 
     @classmethod
     def _parse_tool_call(cls, text: str) -> Optional[Dict[str, Any]]:

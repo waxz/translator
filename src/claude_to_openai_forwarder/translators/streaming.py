@@ -233,8 +233,9 @@ class StreamingTranslator:
                         # Get usage if available
                         if "usage" in data:
                             usage = data["usage"]
-                            total_input_tokens = usage.get("prompt_tokens", 0)
-                            total_output_tokens = usage.get("completion_tokens", 0)
+                            if usage and isinstance(usage, dict):
+                                total_input_tokens = usage.get("prompt_tokens", 0)
+                                total_output_tokens = usage.get("completion_tokens", 0)
 
                 except json.JSONDecodeError as e:
                     logger.warning(f"Failed to parse SSE data: {e}. Data preview: {data_str[:200]}")

@@ -11,7 +11,8 @@ from fastapi.exceptions import RequestValidationError
 
 
 from pydantic import ValidationError
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+import asyncio
 import logging
 import traceback
 import json
@@ -264,12 +265,13 @@ async def create_message(
             logger.info(f"[{request_id}] Starting streaming response")
 
             async def generate() -> AsyncGenerator[str, None]:
+                openai_stream = None
+                translated_stream = None
                 try:
                     openai_stream = client.create_completion_stream(openai_request)
+                    translated_stream = StreamingTranslator.translate_stream(openai_stream)
                     event_count = 0
-                    async for event in StreamingTranslator.translate_stream(
-                        openai_stream
-                    ):
+                    async for event in translated_stream:
                         event_count += 1
                         if event_count % 100 == 0:
                             logger.debug(
@@ -277,10 +279,22 @@ async def create_message(
                             )
                         yield event
                     logger.info(f"[{request_id}] Stream complete: {event_count} events")
+                except asyncio.CancelledError:
+                    logger.info(f"[{request_id}] Streaming request cancelled")
+                    return
                 except Exception as e:
                     logger.error(f"[{request_id}] Streaming error: {str(e)}")
                     logger.error(traceback.format_exc())
                     raise
+                finally:
+                    if translated_stream is not None and hasattr(
+                        translated_stream, "aclose"
+                    ):
+                        with suppress(RuntimeError):
+                            await translated_stream.aclose()
+                    if openai_stream is not None and hasattr(openai_stream, "aclose"):
+                        with suppress(RuntimeError):
+                            await openai_stream.aclose()
 
             return StreamingResponse(
                 generate(),
